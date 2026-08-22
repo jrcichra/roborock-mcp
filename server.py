@@ -33,8 +33,11 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent / ".cache"
 CREDENTIALS_FILE = CACHE_DIR / "credentials.json"
-DEVICE_NICKNAME = "Kronk"
-TARGET_MODEL = "roborock.vacuum.a170"
+# Only needed if your Roborock account has more than one vacuum — set these to
+# pick which one this server controls. Leave unset and the server uses
+# whichever single device it finds (or the first one, if there are several).
+DEVICE_NICKNAME = os.environ.get("ROBOROCK_DEVICE_NAME", "")
+TARGET_MODEL = os.environ.get("ROBOROCK_DEVICE_MODEL", "")
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +87,26 @@ class RoborockSession:
         if not devices:
             raise RuntimeError("No devices discovered. Check your Roborock account.")
 
-        for dev in devices:
-            info = dev.device_info
-            model = getattr(info, "model", "") if info else ""
-            name = dev.name or ""
-            if model == TARGET_MODEL or name.lower() == DEVICE_NICKNAME.lower():
-                self.device = dev
-                break
+        if DEVICE_NICKNAME or TARGET_MODEL:
+            for dev in devices:
+                info = dev.device_info
+                model = getattr(info, "model", "") if info else ""
+                name = dev.name or ""
+                if (TARGET_MODEL and model == TARGET_MODEL) or (
+                    DEVICE_NICKNAME and name.lower() == DEVICE_NICKNAME.lower()
+                ):
+                    self.device = dev
+                    break
 
         if self.device is None:
-            self.device = devices[0]  # fallback to first device
+            self.device = devices[0]  # only/first device
+            if len(devices) > 1:
+                logger.warning(
+                    "Multiple devices found and none matched ROBOROCK_DEVICE_NAME/"
+                    "ROBOROCK_DEVICE_MODEL; defaulting to %r. Set one of those env "
+                    "vars to pick a specific vacuum.",
+                    self.device.name,
+                )
 
         logger.info("Target device: %s (duid: %s)", self.device.name, self.device.duid)
 

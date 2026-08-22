@@ -80,16 +80,22 @@ Quit completely and reopen so it picks up the new server. Roborock tools should 
 
 ---
 
-## Customising for your vacuum
+## If you have more than one vacuum
 
-By default the server looks for a device named **"Kronk"** or model **roborock.vacuum.a170**. To use your own vacuum, edit these two lines near the top of `server.py`:
+By default the server just uses whichever vacuum it finds — no setup needed if
+you only have one. If your Roborock account has multiple vacuums, set one of
+these env vars (alongside `ROBOROCK_EMAIL`) to pick which one this server
+controls:
 
-```python
-DEVICE_NICKNAME = "Kronk"       # ← your vacuum's name in the Roborock app
-TARGET_MODEL    = "roborock.vacuum.a170"   # ← your model ID
+```bash
+ROBOROCK_DEVICE_NAME=Kronk            # the vacuum's name in the Roborock app
+# or
+ROBOROCK_DEVICE_MODEL=roborock.vacuum.a170   # the vacuum's model ID
 ```
 
-You can find your model ID in the Roborock app under device settings, or it will be printed when you run `auth.py`.
+You can find your model ID in the Roborock app under device settings, or it
+will be printed when you run `auth.py`. If neither is set and more than one
+device is found, the server logs a warning and defaults to the first one.
 
 ---
 
