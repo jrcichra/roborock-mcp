@@ -24,6 +24,10 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 - **"Show me the map"** — get a rendered image of the current floor plan
 - **"Wash the mop"** / **"Empty the dust bin"** — dock actions (docks that support them)
 - **"What's the dock status?"** — dock type, errors, dust collection, mop washing
+- **"What routines do I have?"** / **"Run my [name] routine"** — trigger saved Roborock app routines/scenes
+- **"What's its network info?"** — IP, WiFi SSID, signal strength
+- **"Turn off the status light"** — enable/disable the status/flow LEDs (devices that support them)
+- **"Only charge during off-peak hours"** — set the off-peak ("valley") electricity charging window (devices that support it)
 
 ---
 
@@ -126,6 +130,8 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_return_to_dock` | Send home to charge |
 | `roborock_get_rooms` | List all mapped rooms |
 | `roborock_clean_room` | Clean a specific room by name, with optional repeat pass count |
+| `roborock_list_routines` | List saved routines/scenes from the Roborock app |
+| `roborock_run_routine` | Run a saved routine/scene by name |
 | `roborock_locate` | Play a sound to find the vacuum |
 | `roborock_set_fan_power` | Set suction/fan power (quiet, balanced, turbo, max, ...) |
 | `roborock_set_water_level` | Set mop water flow level (off, low, medium, high, ...) |
@@ -134,13 +140,17 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_get_volume` | Get the current sound volume |
 | `roborock_set_volume` | Set the sound volume (0-100) |
 | `roborock_set_child_lock` | Lock/unlock the vacuum's physical buttons |
+| `roborock_set_led_status` | Enable/disable the status indicator LED (devices that support it) |
+| `roborock_set_flow_led_status` | Enable/disable the flow LED / progress light ring (devices that support it) |
 | `roborock_set_dnd` | Enable/disable Do Not Disturb hours |
+| `roborock_set_valley_electricity_timer` | Enable/disable the off-peak electricity charging window (devices that support it) |
 | `roborock_list_maps` | List saved maps (floors/locations) and which is active |
 | `roborock_switch_map` | Switch the active map by name |
 | `roborock_get_map_image` | Get a rendered image of the current floor plan |
 | `roborock_start_mop_wash` / `roborock_stop_mop_wash` | Start/stop washing the mop at the dock |
 | `roborock_empty_dust_bin` | Trigger the dock to empty the dust bin |
 | `roborock_get_dock_status` | Dock type, errors, dust collection, mop washing state |
+| `roborock_get_network_info` | WiFi IP, SSID, and signal strength |
 | `roborock_login_request_code` | Email a login verification code (alternative to running `auth.py`) |
 | `roborock_login_with_code` | Complete login with that code and connect immediately |
 

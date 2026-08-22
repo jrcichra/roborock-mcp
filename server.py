@@ -24,7 +24,7 @@ if sys.platform == "win32":
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from roborock.data import DnDTimer
+from roborock.data import DnDTimer, ValleyElectricityTimer
 from roborock.data.containers import UserData
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
@@ -744,6 +744,86 @@ async def roborock_clean_room(room_name: str, repeat: int = 1) -> str:
 
 
 @mcp.tool(
+    name="roborock_list_routines",
+    annotations={
+        "title": "List Routines",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_list_routines() -> str:
+    """List saved routines/scenes from the Roborock app (e.g. a routine that
+    cleans several rooms at specific fan/water settings in one shot).
+
+    Returns:
+        str: A list of routine names, or an error message.
+             Use a routine's name with roborock_run_routine to run it.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        routines = await session.device.v1_properties.routines.get_routines()
+        if not routines:
+            return "No routines found. Create one in the Roborock app first."
+
+        lines = ["# Routines", ""]
+        for routine in routines:
+            lines.append(f"- **{routine.name}**")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.exception("Error listing routines")
+        return f"Error listing routines: {e}"
+
+
+@mcp.tool(
+    name="roborock_run_routine",
+    annotations={
+        "title": "Run Routine",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def roborock_run_routine(routine_name: str) -> str:
+    """Run a saved routine/scene from the Roborock app by name.
+    Use roborock_list_routines to see available routines first.
+
+    Args:
+        routine_name: The name of the routine to run (e.g. "Morning Clean").
+                      Case-insensitive partial matching is supported.
+
+    Returns:
+        str: Confirmation that the routine has started, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        routines = await session.device.v1_properties.routines.get_routines()
+        if not routines:
+            return "No routines found. Create one in the Roborock app first."
+
+        matches = match_names_by_query(routine_name, [(r.id, r.name) for r in routines])
+        if not matches:
+            available = ", ".join(r.name for r in routines)
+            return f"Error: No routine matching '{routine_name}' found. Available routines: {available}"
+        if len(matches) > 1:
+            names = ", ".join(name for _, name in matches)
+            return f"Error: '{routine_name}' matches multiple routines: {names}. Be more specific."
+
+        routine_id, routine_name_matched = matches[0]
+        await session.device.v1_properties.routines.execute_routine(routine_id)
+        return f"Running routine: {routine_name_matched}"
+    except Exception as e:
+        logger.exception("Error running routine")
+        return f"Error running routine: {e}"
+
+
+@mcp.tool(
     name="roborock_locate",
     annotations={
         "title": "Find Vacuum",
@@ -1016,6 +1096,15 @@ async def roborock_set_volume(level: int) -> str:
         return f"Error setting volume: {e}"
 
 
+async def _toggle_switch_trait(trait, enabled: bool, label: str) -> str:
+    """Enable/disable a RoborockSwitchBase-style trait (child lock, LED, ...)."""
+    if enabled:
+        await trait.enable()
+    else:
+        await trait.disable()
+    return f"{_device_display_name()}'s {label} is now {'enabled' if enabled else 'disabled'}."
+
+
 @mcp.tool(
     name="roborock_set_child_lock",
     annotations={
@@ -1043,14 +1132,77 @@ async def roborock_set_child_lock(enabled: bool) -> str:
         return "Error: This device does not support child lock."
 
     try:
-        if enabled:
-            await child_lock.enable()
-        else:
-            await child_lock.disable()
-        return f"{_device_display_name()}'s child lock is now {'enabled' if enabled else 'disabled'}."
+        return await _toggle_switch_trait(child_lock, enabled, "child lock")
     except Exception as e:
         logger.exception("Error setting child lock")
         return f"Error setting child lock: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_led_status",
+    annotations={
+        "title": "Set Status LED",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_led_status(enabled: bool) -> str:
+    """Enable or disable the vacuum's status indicator LED.
+
+    Args:
+        enabled: True to turn the status LED on, False to turn it off.
+
+    Returns:
+        str: Confirmation of the new state, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    led_status = session.device.v1_properties.led_status
+    if led_status is None:
+        return "Error: This device does not support status LED control."
+
+    try:
+        return await _toggle_switch_trait(led_status, enabled, "status LED")
+    except Exception as e:
+        logger.exception("Error setting status LED")
+        return f"Error setting status LED: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_flow_led_status",
+    annotations={
+        "title": "Set Flow LED",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_flow_led_status(enabled: bool) -> str:
+    """Enable or disable the vacuum's flow LED (the light ring that shows
+    cleaning progress/status on some models).
+
+    Args:
+        enabled: True to turn the flow LED on, False to turn it off.
+
+    Returns:
+        str: Confirmation of the new state, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    flow_led_status = session.device.v1_properties.flow_led_status
+    if flow_led_status is None:
+        return "Error: This device does not support flow LED control."
+
+    try:
+        return await _toggle_switch_trait(flow_led_status, enabled, "flow LED")
+    except Exception as e:
+        logger.exception("Error setting flow LED")
+        return f"Error setting flow LED: {e}"
 
 
 @mcp.tool(
@@ -1100,6 +1252,62 @@ async def roborock_set_dnd(enabled: bool, start_time: str = "22:00", end_time: s
     except Exception as e:
         logger.exception("Error setting Do Not Disturb")
         return f"Error setting Do Not Disturb: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_valley_electricity_timer",
+    annotations={
+        "title": "Set Off-Peak Electricity Timer",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_valley_electricity_timer(
+    enabled: bool, start_time: str = "23:00", end_time: str = "07:00"
+) -> str:
+    """Enable or disable the off-peak ("valley") electricity charging window,
+    which tells the vacuum to prefer charging during cheaper off-peak hours.
+    Only relevant if your electricity plan has time-of-use pricing.
+
+    Args:
+        enabled: True to enable the off-peak charging window, False to turn it off.
+        start_time: Window start time as "HH:MM" (24-hour), used only when enabling.
+        end_time: Window end time as "HH:MM" (24-hour), used only when enabling.
+
+    Returns:
+        str: Confirmation of the new state, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    timer = session.device.v1_properties.valley_electricity_timer
+    if timer is None:
+        return "Error: This device does not support an off-peak electricity timer."
+
+    try:
+        if not enabled:
+            await timer.clear_timer()
+            return f"{_device_display_name()}'s off-peak electricity timer is now disabled."
+
+        start_hour, start_minute = (int(p) for p in start_time.split(":"))
+        end_hour, end_minute = (int(p) for p in end_time.split(":"))
+        await timer.set_timer(
+            ValleyElectricityTimer(
+                start_hour=start_hour,
+                start_minute=start_minute,
+                end_hour=end_hour,
+                end_minute=end_minute,
+                enabled=1,
+            )
+        )
+        return f"{_device_display_name()}'s off-peak electricity timer is now enabled from {start_time} to {end_time}."
+    except ValueError:
+        return "Error: start_time/end_time must be in 'HH:MM' 24-hour format."
+    except Exception as e:
+        logger.exception("Error setting off-peak electricity timer")
+        return f"Error setting off-peak electricity timer: {e}"
 
 
 def _enum_display(value: Any) -> str | None:
@@ -1229,6 +1437,45 @@ async def roborock_get_dock_status() -> str:
     except Exception as e:
         logger.exception("Error getting dock status")
         return f"Error getting dock status: {e}"
+
+
+@mcp.tool(
+    name="roborock_get_network_info",
+    annotations={
+        "title": "Get Network Info",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_network_info() -> str:
+    """Get the vacuum's WiFi network info: IP address, SSID, and signal strength.
+
+    Returns:
+        str: A formatted network info report, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        network_info = session.device.v1_properties.network_info
+        await network_info.refresh()
+
+        info = {
+            "ip": network_info.ip or "unknown",
+            "ssid": network_info.ssid or "unknown",
+            "mac": network_info.mac or "unknown",
+            "signal_strength": f"{network_info.rssi} dBm" if network_info.rssi is not None else "unknown",
+        }
+
+        lines = [f"# {_device_display_name()}'s Network", ""]
+        for key, value in info.items():
+            lines.append(f"- **{key.replace('_', ' ').title()}**: {value}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.exception("Error getting network info")
+        return f"Error getting network info: {e}"
 
 
 @mcp.tool(
