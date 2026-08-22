@@ -20,6 +20,8 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 - **"Turn the volume down"** / **"What's the volume set to?"**
 - **"Lock the buttons"** — enable/disable the child lock
 - **"Don't clean between 10pm and 8am"** — set Do Not Disturb hours
+- **"What maps do I have?"** / **"Switch to the [name] map"** — for accounts with multiple saved maps (e.g. different floors or locations)
+- **"Show me the map"** — get a rendered image of the current floor plan
 
 ---
 
@@ -124,6 +126,9 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_set_volume` | Set the sound volume (0-100) |
 | `roborock_set_child_lock` | Lock/unlock the vacuum's physical buttons |
 | `roborock_set_dnd` | Enable/disable Do Not Disturb hours |
+| `roborock_list_maps` | List saved maps (floors/locations) and which is active |
+| `roborock_switch_map` | Switch the active map by name |
+| `roborock_get_map_image` | Get a rendered image of the current floor plan |
 
 ---
 

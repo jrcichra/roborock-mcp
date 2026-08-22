@@ -22,7 +22,7 @@ if sys.platform == "win32":
         warnings.simplefilter("ignore", DeprecationWarning)
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 from roborock.data import DnDTimer
 from roborock.data.containers import UserData
@@ -364,6 +364,123 @@ async def roborock_return_to_dock() -> str:
         return f"{_device_display_name()} is returning to the dock."
     except Exception as e:
         return f"Error sending to dock: {e}"
+
+
+@mcp.tool(
+    name="roborock_list_maps",
+    annotations={
+        "title": "List Maps",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_list_maps() -> str:
+    """List all saved maps (e.g. different floors or locations) and show which is active.
+
+    Returns:
+        str: A list of map names, or an error message. Use a map's name with
+             roborock_switch_map to make it active before cleaning.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        await session.device.v1_properties.status.refresh()
+        maps = session.device.v1_properties.maps
+        await maps.refresh()
+
+        if not maps.map_info:
+            return "No saved maps found."
+
+        lines = ["# Maps", ""]
+        for info in maps.map_info:
+            marker = " (active)" if info.map_flag == maps.current_map else ""
+            lines.append(f"- **{info.name}**{marker}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing maps: {e}"
+
+
+@mcp.tool(
+    name="roborock_switch_map",
+    annotations={
+        "title": "Switch Map",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_switch_map(map_name: str) -> str:
+    """Switch the active map (e.g. to a different floor or location).
+
+    Use roborock_get_rooms after switching to see that map's rooms.
+
+    Args:
+        map_name: The name of the map to switch to. Case-insensitive partial
+                  matching is supported. Use roborock_list_maps to see options.
+
+    Returns:
+        str: Confirmation of the switch, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        await session.device.v1_properties.status.refresh()
+        maps = session.device.v1_properties.maps
+        await maps.refresh()
+
+        if not maps.map_info:
+            return "No saved maps found."
+
+        search = map_name.lower().strip()
+        matches = [info for info in maps.map_info if search in info.name.lower()]
+        if not matches:
+            available = ", ".join(info.name for info in maps.map_info)
+            return f"Error: No map matching '{map_name}' found. Available maps: {available}"
+        if len(matches) > 1:
+            names = ", ".join(m.name for m in matches)
+            return f"Error: '{map_name}' matches multiple maps: {names}. Be more specific."
+
+        await maps.set_current_map(matches[0].map_flag)
+        session._rooms = None  # rooms differ per map; force a refresh next time
+        return f"Switched to map: {matches[0].name}"
+    except Exception as e:
+        return f"Error switching map: {e}"
+
+
+@mcp.tool(
+    name="roborock_get_map_image",
+    annotations={
+        "title": "Get Map Image",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_map_image() -> Image:
+    """Get a rendered image of the currently active map.
+
+    Returns:
+        Image: A PNG rendering of the current floor plan.
+
+    Raises:
+        RuntimeError: If not connected or no map image is available.
+    """
+    if err := _check_connected():
+        raise RuntimeError(err)
+
+    map_content = session.device.v1_properties.map_content
+    await map_content.refresh()
+    if not map_content.image_content:
+        raise RuntimeError(
+            "No map image available. The vacuum may need to complete a mapping run first."
+        )
+    return Image(data=map_content.image_content, format="png")
 
 
 @mcp.tool(
