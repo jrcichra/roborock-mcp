@@ -14,7 +14,7 @@ WORKDIR /app
 RUN useradd -u 1000 -m appuser && mkdir -p /app/.cache && chown -R appuser:appuser /app
 
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
-COPY --chown=appuser:appuser server.py auth.py ./
+COPY --chown=appuser:appuser server.py auth.py roborock_login.py ./
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

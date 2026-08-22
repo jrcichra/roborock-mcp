@@ -81,71 +81,6 @@ def _creds_from_login(email: str, user_data: UserData, home_data, base_url: str)
     }
 
 
-async def _code_login_v4_with_live_agreement(api_client, email: str, code: str) -> UserData:
-    """Replicate RoborockApiClient.code_login_v4, but fetch the current
-    user-agreement version instead of trusting the library's hardcoded one.
-
-    python-roborock's code_login_v4 hardcodes the user-agreement majorVersion/
-    minorVersion it sends; when Roborock bumps the live agreement (checked via
-    /api/v3/app/agreement/latest), a stale hardcoded version trips response
-    code 3006 (invalid user agreement) even though nothing needs accepting
-    in-app. This tries the live version first, falling back to the library's
-    hardcoded one.
-    """
-    import secrets
-    import string
-
-    from roborock.web_api import PreparedRequest
-
-    base_url = await api_client.base_url
-    country = await api_client.country
-    country_code = await api_client.country_code
-    header_clientid = api_client._get_header_client_id()
-
-    agreement_request = PreparedRequest(base_url, api_client.session, {"header_clientid": header_clientid})
-    agreement_response = await agreement_request.request(
-        "get", "/api/v3/app/agreement/latest", params={"country": country or "US"}
-    )
-    data = agreement_response.get("data", {})
-
-    async def attempt_login(major: int, minor: int) -> dict:
-        x_mercy_ks = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
-        x_mercy_k = await api_client._sign_key_v3(x_mercy_ks)
-        login_request = PreparedRequest(
-            base_url,
-            api_client.session,
-            {
-                "header_clientid": header_clientid,
-                "x-mercy-ks": x_mercy_ks,
-                "x-mercy-k": x_mercy_k,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "header_clientlang": "en",
-                "header_appversion": "4.54.02",
-                "header_phonesystem": "iOS",
-                "header_phonemodel": "iPhone16,1",
-            },
-        )
-        return await login_request.request(
-            "post",
-            "/api/v4/auth/email/login/code",
-            data={
-                "country": country,
-                "countryCode": country_code,
-                "email": email,
-                "code": code,
-                "majorVersion": major,
-                "minorVersion": minor,
-            },
-        )
-
-    for major, minor in [(data.get("majorVersion", 14), data.get("minorVersion", 0)), (14, 0)]:
-        response = await attempt_login(major, minor)
-        if response.get("code") == 200:
-            return UserData.from_dict(response["data"])
-
-    raise RuntimeError(f"v4 login failed: code={response.get('code')} msg={response.get('msg')}")
-
-
 async def _password_login_and_cache() -> dict:
     """Log in with ROBOROCK_EMAIL/ROBOROCK_PASSWORD and cache fresh credentials.
 
@@ -264,12 +199,12 @@ class RoborockSession:
             try:
                 await self.device.close()
             except Exception:
-                pass
+                logger.warning("Error closing device connection", exc_info=True)
         if self.manager:
             try:
                 await self.manager.close()
             except Exception:
-                pass
+                logger.warning("Error closing device manager", exc_info=True)
 
 
 session = RoborockSession()
@@ -321,6 +256,23 @@ def _check_connected() -> str | None:
 def _send(command: RoborockCommand, params: Any = None):
     """Send a command via the device's v1 command trait."""
     return session.device.v1_properties.command.send(command, params)
+
+
+def match_names_by_query(query: str, items: list[tuple[Any, str]]) -> list[tuple[Any, str]]:
+    """Match a query against (key, name) pairs, case-insensitively.
+
+    An exact name match wins outright. Otherwise falls back to substring
+    matching in either direction (so "kitchen" matches "Kitchen" and "kit"
+    matches "Kitchen"), but an empty/blank query matches nothing — without
+    this guard, "" is a substring of every name and would match everything.
+    """
+    search = query.lower().strip()
+    if not search:
+        return []
+    exact = [(key, name) for key, name in items if name.lower() == search]
+    if exact:
+        return exact
+    return [(key, name) for key, name in items if search in name.lower() or name.lower() in search]
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +364,7 @@ async def roborock_get_status() -> str:
         return "\n".join(lines)
 
     except Exception as e:
+        logger.exception("Error getting status")
         return f"Error getting status: {e}"
 
 
@@ -438,6 +391,7 @@ async def roborock_start_cleaning() -> str:
         await _send(RoborockCommand.APP_START)
         return f"{_device_display_name()} has started cleaning."
     except Exception as e:
+        logger.exception("Error starting clean")
         return f"Error starting clean: {e}"
 
 
@@ -464,6 +418,7 @@ async def roborock_stop_cleaning() -> str:
         await _send(RoborockCommand.APP_STOP)
         return f"{_device_display_name()} has stopped cleaning."
     except Exception as e:
+        logger.exception("Error stopping clean")
         return f"Error stopping clean: {e}"
 
 
@@ -490,6 +445,7 @@ async def roborock_pause_cleaning() -> str:
         await _send(RoborockCommand.APP_PAUSE)
         return f"{_device_display_name()} has paused cleaning."
     except Exception as e:
+        logger.exception("Error pausing clean")
         return f"Error pausing clean: {e}"
 
 
@@ -516,6 +472,7 @@ async def roborock_return_to_dock() -> str:
         await _send(RoborockCommand.APP_CHARGE)
         return f"{_device_display_name()} is returning to the dock."
     except Exception as e:
+        logger.exception("Error sending to dock")
         return f"Error sending to dock: {e}"
 
 
@@ -553,6 +510,7 @@ async def roborock_list_maps() -> str:
             lines.append(f"- **{info.name}**{marker}")
         return "\n".join(lines)
     except Exception as e:
+        logger.exception("Error listing maps")
         return f"Error listing maps: {e}"
 
 
@@ -589,19 +547,21 @@ async def roborock_switch_map(map_name: str) -> str:
         if not maps.map_info:
             return "No saved maps found."
 
-        search = map_name.lower().strip()
-        matches = [info for info in maps.map_info if search in info.name.lower()]
+        by_name = {info.name: info for info in maps.map_info}
+        matches = match_names_by_query(map_name, list(by_name.items()))
         if not matches:
-            available = ", ".join(info.name for info in maps.map_info)
+            available = ", ".join(by_name)
             return f"Error: No map matching '{map_name}' found. Available maps: {available}"
         if len(matches) > 1:
-            names = ", ".join(m.name for m in matches)
+            names = ", ".join(name for name, _ in matches)
             return f"Error: '{map_name}' matches multiple maps: {names}. Be more specific."
 
-        await maps.set_current_map(matches[0].map_flag)
+        matched_info = matches[0][1]
+        await maps.set_current_map(matched_info.map_flag)
         session._rooms = None  # rooms differ per map; force a refresh next time
-        return f"Switched to map: {matches[0].name}"
+        return f"Switched to map: {matched_info.name}"
     except Exception as e:
+        logger.exception("Error switching map")
         return f"Error switching map: {e}"
 
 
@@ -680,6 +640,7 @@ async def roborock_get_rooms() -> str:
         try:
             return await _get_rooms_fallback()
         except Exception as e:
+            logger.exception("Error getting rooms")
             return f"Error getting rooms: {e}"
 
 
@@ -753,19 +714,19 @@ async def roborock_clean_room(room_name: str, repeat: int = 1) -> str:
         if not session._rooms:
             return "Error: No rooms found. The vacuum may need to complete a mapping run first."
 
-        # Find room by name (case-insensitive partial match)
-        search = room_name.lower().strip()
-        matched_segments = []
-        matched_names = []
-
-        for seg_id, name in session._rooms.items():
-            if search in name.lower() or name.lower() in search:
-                matched_segments.append(int(seg_id))
-                matched_names.append(name)
-
-        if not matched_segments:
+        # Find room(s) by name (case-insensitive, exact match preferred)
+        matches = match_names_by_query(room_name, list(session._rooms.items()))
+        if not matches:
             available = ", ".join(session._rooms.values())
             return f"Error: No room matching '{room_name}' found. Available rooms: {available}"
+
+        distinct_names = {name for _, name in matches}
+        if len(distinct_names) > 1:
+            names = ", ".join(sorted(distinct_names))
+            return f"Error: '{room_name}' matches multiple rooms: {names}. Be more specific."
+
+        matched_segments = [int(seg_id) for seg_id, _ in matches]
+        matched_names = [name for _, name in matches]
 
         # Start segment cleaning
         await _send(
@@ -778,6 +739,7 @@ async def roborock_clean_room(room_name: str, repeat: int = 1) -> str:
         return f"{_device_display_name()} is now cleaning: {rooms_str}{pass_str}"
 
     except Exception as e:
+        logger.exception("Error starting room clean")
         return f"Error starting room clean: {e}"
 
 
@@ -802,8 +764,9 @@ async def roborock_locate() -> str:
 
     try:
         await _send(RoborockCommand.FIND_ME)
-        return f"{_device_display_name()} is playing a sound so you can find him!"
+        return f"{_device_display_name()} is playing a sound so you can find it!"
     except Exception as e:
+        logger.exception("Error locating")
         return f"Error locating: {e}"
 
 
@@ -840,6 +803,7 @@ async def roborock_set_fan_power(level: str) -> str:
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
+        logger.exception("Error setting fan power")
         return f"Error setting fan power: {e}"
 
 
@@ -875,6 +839,7 @@ async def roborock_set_water_level(level: str) -> str:
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
+        logger.exception("Error setting water level")
         return f"Error setting water level: {e}"
 
 
@@ -932,6 +897,7 @@ async def roborock_get_consumables() -> str:
             return "No consumable data reported by this device."
         return "\n".join(lines)
     except Exception as e:
+        logger.exception("Error getting consumables")
         return f"Error getting consumables: {e}"
 
 
@@ -985,6 +951,7 @@ async def roborock_get_clean_history() -> str:
 
         return "\n".join(lines)
     except Exception as e:
+        logger.exception("Error getting clean history")
         return f"Error getting clean history: {e}"
 
 
@@ -1012,6 +979,7 @@ async def roborock_get_volume() -> str:
         await volume.refresh()
         return f"{_device_display_name()}'s volume is {volume.volume}."
     except Exception as e:
+        logger.exception("Error getting volume")
         return f"Error getting volume: {e}"
 
 
@@ -1044,6 +1012,7 @@ async def roborock_set_volume(level: int) -> str:
         await volume.set_volume(level)
         return f"{_device_display_name()}'s volume set to {level}."
     except Exception as e:
+        logger.exception("Error setting volume")
         return f"Error setting volume: {e}"
 
 
@@ -1080,6 +1049,7 @@ async def roborock_set_child_lock(enabled: bool) -> str:
             await child_lock.disable()
         return f"{_device_display_name()}'s child lock is now {'enabled' if enabled else 'disabled'}."
     except Exception as e:
+        logger.exception("Error setting child lock")
         return f"Error setting child lock: {e}"
 
 
@@ -1128,6 +1098,7 @@ async def roborock_set_dnd(enabled: bool, start_time: str = "22:00", end_time: s
     except ValueError:
         return "Error: start_time/end_time must be in 'HH:MM' 24-hour format."
     except Exception as e:
+        logger.exception("Error setting Do Not Disturb")
         return f"Error setting Do Not Disturb: {e}"
 
 
@@ -1161,6 +1132,7 @@ async def roborock_start_mop_wash() -> str:
         await _send(RoborockCommand.APP_START_WASH)
         return f"{_device_display_name()} is washing its mop."
     except Exception as e:
+        logger.exception("Error starting mop wash")
         return f"Error starting mop wash: {e}"
 
 
@@ -1187,6 +1159,7 @@ async def roborock_stop_mop_wash() -> str:
         await _send(RoborockCommand.APP_STOP_WASH)
         return f"{_device_display_name()} has stopped washing its mop."
     except Exception as e:
+        logger.exception("Error stopping mop wash")
         return f"Error stopping mop wash: {e}"
 
 
@@ -1213,6 +1186,7 @@ async def roborock_empty_dust_bin() -> str:
         await _send(RoborockCommand.APP_START_COLLECT_DUST)
         return f"{_device_display_name()}'s dock is emptying the dust bin."
     except Exception as e:
+        logger.exception("Error emptying dust bin")
         return f"Error emptying dust bin: {e}"
 
 
@@ -1253,6 +1227,7 @@ async def roborock_get_dock_status() -> str:
             lines.append(f"- **{key.replace('_', ' ').title()}**: {value}")
         return "\n".join(lines)
     except Exception as e:
+        logger.exception("Error getting dock status")
         return f"Error getting dock status: {e}"
 
 
@@ -1294,6 +1269,7 @@ async def roborock_login_request_code() -> str:
         session._pending_login_client = api_client
         return f"Verification code sent to {email}. Check your email, then call roborock_login_with_code with it."
     except Exception as e:
+        logger.exception("Error requesting login code")
         return f"Error requesting login code: {e}"
 
 
@@ -1333,7 +1309,9 @@ async def roborock_login_with_code(code: str) -> str:
         try:
             user_data = await api_client.code_login(code)
         except Exception:
-            user_data = await _code_login_v4_with_live_agreement(api_client, email, code)
+            from roborock_login import code_login_v4_with_live_agreement
+
+            user_data = await code_login_v4_with_live_agreement(api_client, email, code)
 
         home_data = await api_client.get_home_data(user_data)
         creds = _creds_from_login(email, user_data, home_data, await api_client.base_url)
@@ -1341,12 +1319,14 @@ async def roborock_login_with_code(code: str) -> str:
         session._pending_login_client = None
         logger.info("Credentials cached to %s via roborock_login_with_code", CREDENTIALS_FILE)
     except Exception as e:
+        logger.exception("Error completing login")
         return f"Error completing login: {e}"
 
     try:
         await session._connect_with_creds(creds)
         return f"Login successful — connected to {session.device.name}."
     except Exception as e:
+        logger.exception("Login succeeded but connecting failed")
         return f"Login succeeded and credentials were saved, but connecting failed: {e}"
 
 

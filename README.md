@@ -175,12 +175,16 @@ one-time step rather than a repeat one — an `emptyDir` won't do it.
 roborock-mcp/
 ├── server.py          # MCP server — the main file
 ├── auth.py            # Run once to authenticate
+├── roborock_login.py  # Shared email-code login helper (used by both above)
+├── tests/             # Tests for the pure, hardware-independent helpers
 ├── pyproject.toml     # Python dependencies
 ├── uv.lock            # Locked dependency versions
 ├── .env.example       # Example environment variable
 └── .cache/            # Created by auth.py — gitignored, never shared
     └── credentials.json
 ```
+
+Run the tests with `uv run pytest`.
 
 ---
 

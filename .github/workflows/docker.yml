@@ -21,7 +21,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
       - name: Compile check
-        run: uv run python -m py_compile server.py auth.py
+        run: uv run python -m py_compile server.py auth.py roborock_login.py
+      - name: Run tests
+        run: uv run pytest -q
 
   build:
     needs: check
