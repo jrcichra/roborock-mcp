@@ -1,12 +1,12 @@
 # Roborock MCP Server
 
-Control your Roborock vacuum with Claude. Just ask — "start cleaning", "send Kronk home", "what's the battery?", "clean the kitchen" — and Claude talks directly to your robot.
+Control your Roborock vacuum from any MCP-compatible client. Just ask — "start cleaning", "send Kronk home", "what's the battery?", "clean the kitchen" — and your assistant talks directly to your robot.
 
 Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](https://github.com/Python-roborock/python-roborock).
 
 ---
 
-## What you can ask Claude
+## What you can ask
 
 - **"Start cleaning"** — full home clean
 - **"Stop cleaning"** / **"Pause cleaning"**
@@ -22,7 +22,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 
 - [uv](https://docs.astral.sh/uv/) (Python 3.10+ is installed automatically by uv)
 - A Roborock vacuum linked to a Roborock account
-- [Claude Desktop](https://claude.ai/download)
+- An MCP-compatible client (e.g. [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/product/claude-code), or any other MCP client)
 
 ---
 
@@ -52,14 +52,9 @@ ROBOROCK_EMAIL=your_email@example.com uv run auth.py
 
 Check your email for a verification code, enter it when prompted. Your credentials are saved locally in `.cache/credentials.json` — this file is gitignored and never shared.
 
-### 3. Add to Claude Desktop
+### 3. Add to your MCP client
 
-Open your Claude Desktop config file:
-
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-- **Mac:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-Add this inside `"mcpServers"`:
+Most MCP clients (Claude Desktop, Claude Code, etc.) read a JSON config with an `mcpServers` block. Add an entry like this:
 
 ```json
 "roborock": {
@@ -73,9 +68,15 @@ Add this inside `"mcpServers"`:
 
 Replace `/full/path/to/roborock-mcp/` with the actual folder path where you cloned this repo.
 
-### 4. Restart Claude Desktop
+For Claude Desktop specifically, this goes in:
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Mac:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-Quit completely and reopen. Claude will now have Roborock tools available.
+Check your client's docs for where it expects MCP server config.
+
+### 4. Restart your client
+
+Quit completely and reopen so it picks up the new server. Roborock tools should now be available.
 
 ---
 
@@ -92,7 +93,7 @@ You can find your model ID in the Roborock app under device settings, or it will
 
 ---
 
-## Tools exposed to Claude
+## Tools exposed
 
 | Tool | Description |
 |------|-------------|
@@ -128,7 +129,7 @@ roborock-mcp/
 
 **"Could not attach MCP server"**
 - Make sure you've run `auth.py` first
-- Check the path in your Claude config is correct and uses the full absolute path
+- Check the path in your client's MCP config is correct and uses the full absolute path
 - On Windows, make sure backslashes are doubled: `C:\\Users\\...`
 
 **"No devices discovered"**
@@ -143,7 +144,7 @@ roborock-mcp/
   `auth.py` from this repo, not an older cached copy.
 
 **Room cleaning not working**
-- Run "list my rooms" in Claude first — the vacuum needs to have completed a mapping run
+- Run "list my rooms" first — the vacuum needs to have completed a mapping run
 - Room names are matched loosely, so "kitchen" will match "Kitchen"
 
 ---
@@ -151,12 +152,12 @@ roborock-mcp/
 ## Notes
 
 - Credentials are cached locally in `.cache/credentials.json`. This folder is gitignored. **Never commit or share this file.**
-- The auth token expires eventually — if Claude starts getting errors, re-run `auth.py` to refresh.
+- The auth token expires eventually — if you start getting errors, re-run `auth.py` to refresh.
 - Tested on python-roborock v5.0.0 with a Roborock Q Revo (a170).
 
 ---
 
 ## Credits
 
-Built by [rainbowllamaspatula](https://github.com/rainbowllamaspatula)) with help from Claude.
+Built by [rainbowllamaspatula](https://github.com/rainbowllamaspatula)), forked and extended by [jrcichra](https://github.com/jrcichra).
 Powered by [python-roborock](https://github.com/Python-roborock/python-roborock) and [FastMCP](https://github.com/jlowin/fastmcp).
