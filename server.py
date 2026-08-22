@@ -54,6 +54,45 @@ def _load_cached_credentials() -> dict:
     return json.loads(CREDENTIALS_FILE.read_text())
 
 
+async def _password_login_and_cache() -> dict:
+    """Log in with ROBOROCK_EMAIL/ROBOROCK_PASSWORD and cache fresh credentials.
+
+    Used to bootstrap credentials.json when it doesn't exist, and to self-heal
+    if the cached token has stopped working — no interactive email code needed.
+    Requires ROBOROCK_PASSWORD; not all Roborock accounts have a password set
+    (some are email-code-only), in which case this just isn't available.
+    """
+    from roborock.web_api import RoborockApiClient
+
+    email = os.environ.get("ROBOROCK_EMAIL", "")
+    password = os.environ.get("ROBOROCK_PASSWORD", "")
+    if not email or not password:
+        raise RuntimeError(
+            "No usable cached credentials and no ROBOROCK_EMAIL/ROBOROCK_PASSWORD "
+            "set to log in automatically. Run 'python auth.py' first."
+        )
+
+    logger.info("Logging in with ROBOROCK_EMAIL/ROBOROCK_PASSWORD to refresh credentials...")
+    api_client = RoborockApiClient(username=email)
+    user_data = await api_client.pass_login(password)
+    home_data = await api_client.get_home_data(user_data)
+
+    creds = {
+        "email": email,
+        "user_data": user_data.as_dict()
+        if hasattr(user_data, "as_dict")
+        else json.loads(json.dumps(user_data, default=str)),
+        "home_data": home_data.as_dict()
+        if hasattr(home_data, "as_dict")
+        else json.loads(json.dumps(home_data, default=str)),
+        "base_url": await api_client.base_url,
+    }
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2, default=str))
+    logger.info("Refreshed credentials cached to %s", CREDENTIALS_FILE)
+    return creds
+
+
 # ---------------------------------------------------------------------------
 # Session — manages the DeviceManager and target device
 # ---------------------------------------------------------------------------
@@ -68,8 +107,29 @@ class RoborockSession:
         self._home_data_raw: Optional[dict] = None
 
     async def connect(self):
-        """Authenticate and connect to the target device."""
-        creds = _load_cached_credentials()
+        """Authenticate and connect to the target device.
+
+        Tries cached credentials first. If they're missing or stop working and
+        ROBOROCK_PASSWORD is set, logs in fresh and retries once — this lets a
+        long-running deployment self-heal from an expired token without any
+        manual credential refresh.
+        """
+        try:
+            creds = _load_cached_credentials()
+        except FileNotFoundError:
+            creds = await _password_login_and_cache()
+
+        try:
+            await self._connect_with_creds(creds)
+        except Exception as e:
+            if not os.environ.get("ROBOROCK_PASSWORD"):
+                raise
+            logger.warning("Connect failed (%s); retrying with a fresh password login.", e)
+            creds = await _password_login_and_cache()
+            await self._connect_with_creds(creds)
+
+    async def _connect_with_creds(self, creds: dict):
+        """Connect to the target device using the given credentials dict."""
         self._home_data_raw = creds.get("home_data", {})
 
         email = creds.get("email") or os.environ.get("ROBOROCK_EMAIL", "")

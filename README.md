@@ -61,6 +61,13 @@ ROBOROCK_EMAIL=your_email@example.com uv run auth.py
 
 Check your email for a verification code, enter it when prompted. Your credentials are saved locally in `.cache/credentials.json` — this file is gitignored and never shared.
 
+**Optional:** if your Roborock account has a password set, you can skip
+`auth.py` entirely and set `ROBOROCK_PASSWORD` alongside `ROBOROCK_EMAIL`
+instead — the server logs in on its own the first time it runs, and
+automatically re-logs in if the cached token ever stops working. Useful for
+unattended/headless deployments. Leave it unset to keep using the one-time
+`auth.py` flow with no password stored anywhere.
+
 ### 3. Add to your MCP client
 
 Most MCP clients (Claude Desktop, Claude Code, etc.) read a JSON config with an `mcpServers` block. Add an entry like this:
@@ -196,7 +203,7 @@ roborock-mcp/
 ## Notes
 
 - Credentials are cached locally in `.cache/credentials.json`. This folder is gitignored. **Never commit or share this file.**
-- The auth token expires eventually — if you start getting errors, re-run `auth.py` to refresh.
+- The auth token expires eventually — there's no documented lifetime for it. If `ROBOROCK_PASSWORD` is set, the server refreshes it automatically; otherwise re-run `auth.py`.
 - Tested on python-roborock v5.0.0 with a Roborock Q Revo (a170).
 
 ---
