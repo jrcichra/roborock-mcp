@@ -102,6 +102,8 @@ You can find your model ID in the Roborock app under device settings, or it will
 | `roborock_get_rooms` | List all mapped rooms |
 | `roborock_clean_room` | Clean a specific room by name |
 | `roborock_locate` | Play a sound to find the vacuum |
+| `roborock_set_fan_power` | Set suction/fan power (quiet, balanced, turbo, max, ...) |
+| `roborock_set_water_level` | Set mop water flow level (off, low, medium, high, ...) |
 
 ---
 
@@ -129,6 +131,13 @@ roborock-mcp/
 **"No devices discovered"**
 - Re-run `auth.py` to refresh your credentials
 - Make sure your vacuum is online and linked to your Roborock account
+
+**"invalid user agreement" / response code 3006 during login**
+- Roborock periodically bumps the version of its user-agreement doc, and older
+  versions of `python-roborock` send a stale hardcoded version when logging in,
+  which the server rejects. `auth.py` works around this by fetching the current
+  agreement version live before logging in — just make sure you're running the
+  `auth.py` from this repo, not an older cached copy.
 
 **Room cleaning not working**
 - Run "list my rooms" in Claude first — the vacuum needs to have completed a mapping run

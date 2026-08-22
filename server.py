@@ -73,10 +73,14 @@ class RoborockSession:
         base_url = creds.get("base_url")
 
         user_params = UserParams(username=email, user_data=user_data, base_url=base_url)
+        # create_device_manager() already performs discovery AND connects each
+        # device (cloud MQTT + local LAN where available), including a background
+        # reconnect loop. Do NOT call discover_devices() again here — it re-fetches
+        # home data over HTTP — and do NOT call device.connect() on the result:
+        # both are redundant and the extra connect tears down healthy connections.
         self.manager = await create_device_manager(user_params)
 
-        # Discover devices and find target
-        devices = await self.manager.discover_devices()
+        devices = await self.manager.get_devices()
         if not devices:
             raise RuntimeError("No devices discovered. Check your Roborock account.")
 
@@ -92,9 +96,6 @@ class RoborockSession:
             self.device = devices[0]  # fallback to first device
 
         logger.info("Target device: %s (duid: %s)", self.device.name, self.device.duid)
-
-        # Connect to the device
-        await self.device.connect()
 
     async def close(self):
         """Clean up connections."""
@@ -147,6 +148,47 @@ def _check_connected() -> str | None:
 def _send(command: RoborockCommand, params: Any = None):
     """Send a command via the device's v1 command trait."""
     return session.device.v1_properties.command.send(command, params)
+
+
+# ---------------------------------------------------------------------------
+# Fan power / water level helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_mode_code(value: str | int, options) -> int:
+    """Resolve a friendly mode name ('max') or raw code (104) to a device code.
+
+    `options` is the device's supported list of RoborockModeEnum members
+    (e.g. status.fan_speed_options / status.water_mode_options).
+    """
+    if isinstance(value, int):
+        if any(opt.code == value for opt in options):
+            return value
+        raise ValueError(f"Code {value} not supported by this device. Valid: "
+                         f"{[(o.name, o.code) for o in options]}")
+    needle = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    for opt in options:
+        if opt.name.lower() == needle or opt.value == needle:
+            return opt.code
+    raise ValueError(f"Unknown mode '{value}'. Valid: {[o.name for o in options]}")
+
+
+async def _set_motor_modes(*, fan_power: int | None = None, water_box_mode: int | None = None) -> dict:
+    """Set fan power and/or water level via SET_CLEAN_MOTOR_MODE.
+
+    Unspecified values are kept at their current setting, mirroring how the
+    official app sends the full triple.
+    """
+    status = session.device.v1_properties.status
+    await status.refresh()
+    cur_fan = fan_power if fan_power is not None else (status.fan_power or 102)
+    cur_water = water_box_mode if water_box_mode is not None else (status.water_box_mode or 200)
+    cur_mop = getattr(status, "mop_mode", None)
+    params: dict[str, int] = {"fan_power": cur_fan, "water_box_mode": cur_water}
+    if cur_mop is not None:
+        params["mop_mode"] = cur_mop
+    await _send(RoborockCommand.SET_CLEAN_MOTOR_MODE, [params])
+    await status.refresh()
+    return {"fan_power": status.fan_power, "water_box_mode": status.water_box_mode, "mop_mode": getattr(status, "mop_mode", None)}
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +508,77 @@ async def roborock_locate() -> str:
         return f"{DEVICE_NICKNAME} is playing a sound so you can find him!"
     except Exception as e:
         return f"Error locating: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_fan_power",
+    annotations={
+        "title": "Set Fan Power (Suction)",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_fan_power(level: str) -> str:
+    """Set the fan power / suction level. Works live, even mid-clean.
+
+    Args:
+        level: One of the device's supported modes, e.g. "quiet", "balanced",
+               "turbo", "max", "max_plus", "smart_mode", or a raw code like 104.
+               Call roborock_get_status first to see the current level.
+
+    Returns:
+        str: Confirmation with the new fan level, or an error message listing
+             valid options.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        options = session.device.v1_properties.status.fan_speed_options
+        code = _resolve_mode_code(level, options)
+        result = await _set_motor_modes(fan_power=code)
+        return f"{DEVICE_NICKNAME} fan power set: {result['fan_power']} ({result})"
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error setting fan power: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_water_level",
+    annotations={
+        "title": "Set Mop Water Level",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_water_level(level: str) -> str:
+    """Set the mop water flow level. Works live, even mid-clean.
+
+    Args:
+        level: One of the device's supported water modes, e.g. "off", "low",
+               "medium", "high", "smart_mode", or a raw code like 203.
+
+    Returns:
+        str: Confirmation with the new water level, or an error message listing
+             valid options.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        options = session.device.v1_properties.status.water_mode_options
+        code = _resolve_mode_code(level, options)
+        result = await _set_motor_modes(water_box_mode=code)
+        return f"{DEVICE_NICKNAME} water level set: {result['water_box_mode']} ({result})"
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error setting water level: {e}"
 
 
 # ---------------------------------------------------------------------------
