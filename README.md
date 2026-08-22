@@ -20,7 +20,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 
 ## Requirements
 
-- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (Python 3.10+ is installed automatically by uv)
 - A Roborock vacuum linked to a Roborock account
 - [Claude Desktop](https://claude.ai/download)
 
@@ -31,8 +31,10 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+This creates a `.venv` and installs the pinned dependencies from `uv.lock`.
 
 ### 2. Authenticate with Roborock
 
@@ -40,12 +42,12 @@ Set your Roborock account email, then run the auth script:
 
 **Windows (Command Prompt):**
 ```cmd
-set ROBOROCK_EMAIL=your_email@example.com && python auth.py
+set ROBOROCK_EMAIL=your_email@example.com && uv run auth.py
 ```
 
 **Mac/Linux:**
 ```bash
-ROBOROCK_EMAIL=your_email@example.com python auth.py
+ROBOROCK_EMAIL=your_email@example.com uv run auth.py
 ```
 
 Check your email for a verification code, enter it when prompted. Your credentials are saved locally in `.cache/credentials.json` — this file is gitignored and never shared.
@@ -61,8 +63,8 @@ Add this inside `"mcpServers"`:
 
 ```json
 "roborock": {
-  "command": "python",
-  "args": ["/full/path/to/roborock-mcp/server.py"],
+  "command": "uv",
+  "args": ["run", "--directory", "/full/path/to/roborock-mcp", "server.py"],
   "env": {
     "ROBOROCK_EMAIL": "your_email@example.com"
   }
@@ -113,7 +115,8 @@ You can find your model ID in the Roborock app under device settings, or it will
 roborock-mcp/
 ├── server.py          # MCP server — the main file
 ├── auth.py            # Run once to authenticate
-├── requirements.txt   # Python dependencies
+├── pyproject.toml     # Python dependencies
+├── uv.lock            # Locked dependency versions
 ├── .env.example       # Example environment variable
 └── .cache/            # Created by auth.py — gitignored, never shared
     └── credentials.json
