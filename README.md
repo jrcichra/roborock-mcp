@@ -137,6 +137,23 @@ device is found, the server logs a warning and defaults to the first one.
 
 ---
 
+## Running as an HTTP server (e.g. in a container)
+
+By default `server.py` talks over stdio, which is what desktop MCP clients
+expect. To run it as a standalone HTTP server instead — for a long-running
+deployment rather than a per-client subprocess — set:
+
+```bash
+MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 python server.py
+```
+
+The MCP endpoint is then served at `http://<host>:<port>/mcp`. A `Dockerfile`
+is included and builds/runs with these defaults already set; `.cache/credentials.json`
+still needs to come from somewhere (e.g. a mounted secret), since `auth.py`'s
+login flow is interactive and can't run inside a container.
+
+---
+
 ## File structure
 
 ```

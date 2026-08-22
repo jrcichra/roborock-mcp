@@ -145,7 +145,12 @@ async def roborock_lifespan(server: FastMCP):
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("roborock_mcp", lifespan=roborock_lifespan)
+mcp = FastMCP(
+    "roborock_mcp",
+    lifespan=roborock_lifespan,
+    host=os.environ.get("MCP_HOST", "127.0.0.1"),
+    port=int(os.environ.get("MCP_PORT", "8000")),
+)
 
 
 def _device_display_name() -> str:
@@ -1101,4 +1106,7 @@ async def roborock_get_dock_status() -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    mcp.run()
+    # Local/desktop use (Claude Desktop, Claude Code, etc.) talks over stdio.
+    # Set MCP_TRANSPORT=streamable-http (with MCP_HOST/MCP_PORT) to run this
+    # as a standalone HTTP server instead, e.g. in a container.
+    mcp.run(transport=os.environ.get("MCP_TRANSPORT", "stdio"))
