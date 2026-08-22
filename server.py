@@ -971,6 +971,131 @@ async def roborock_set_dnd(enabled: bool, start_time: str = "22:00", end_time: s
         return f"Error setting Do Not Disturb: {e}"
 
 
+def _enum_display(value: Any) -> str | None:
+    """Get a friendly name for a RoborockEnum value, falling back to str()."""
+    if value is None:
+        return None
+    return getattr(value, "display_name", None) or str(value)
+
+
+@mcp.tool(
+    name="roborock_start_mop_wash",
+    annotations={
+        "title": "Wash Mop",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_start_mop_wash() -> str:
+    """Start washing the mop at the dock (docks that support mop washing only).
+
+    Returns:
+        str: Confirmation that washing has started, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        await _send(RoborockCommand.APP_START_WASH)
+        return f"{_device_display_name()} is washing its mop."
+    except Exception as e:
+        return f"Error starting mop wash: {e}"
+
+
+@mcp.tool(
+    name="roborock_stop_mop_wash",
+    annotations={
+        "title": "Stop Washing Mop",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_stop_mop_wash() -> str:
+    """Stop washing the mop at the dock.
+
+    Returns:
+        str: Confirmation that washing has stopped, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        await _send(RoborockCommand.APP_STOP_WASH)
+        return f"{_device_display_name()} has stopped washing its mop."
+    except Exception as e:
+        return f"Error stopping mop wash: {e}"
+
+
+@mcp.tool(
+    name="roborock_empty_dust_bin",
+    annotations={
+        "title": "Empty Dust Bin",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_empty_dust_bin() -> str:
+    """Trigger the dock to empty the vacuum's dust bin (auto-empty docks only).
+
+    Returns:
+        str: Confirmation that emptying has started, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        await _send(RoborockCommand.APP_START_COLLECT_DUST)
+        return f"{_device_display_name()}'s dock is emptying the dust bin."
+    except Exception as e:
+        return f"Error emptying dust bin: {e}"
+
+
+@mcp.tool(
+    name="roborock_get_dock_status",
+    annotations={
+        "title": "Get Dock Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_dock_status() -> str:
+    """Get the charging dock's status: type, errors, dust collection, and mop washing.
+
+    Returns:
+        str: A formatted dock status report, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        status = session.device.v1_properties.status
+        await status.refresh()
+
+        info = {
+            "dock_type": _enum_display(status.dock_type) or "unknown",
+            "error": _enum_display(status.dock_error_status) or "none",
+            "dust_collection": "in progress" if status.dust_collection_status else "idle",
+            "auto_empty_enabled": "yes" if status.auto_dust_collection else "no",
+            "water_shortage": "yes" if status.water_shortage_status else "no",
+            "mop_attached": "yes" if status.water_box_carriage_status else "no",
+        }
+
+        lines = [f"# {_device_display_name()}'s Dock", ""]
+        for key, value in info.items():
+            lines.append(f"- **{key.replace('_', ' ').title()}**: {value}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting dock status: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

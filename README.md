@@ -22,6 +22,8 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 - **"Don't clean between 10pm and 8am"** — set Do Not Disturb hours
 - **"What maps do I have?"** / **"Switch to the [name] map"** — for accounts with multiple saved maps (e.g. different floors or locations)
 - **"Show me the map"** — get a rendered image of the current floor plan
+- **"Wash the mop"** / **"Empty the dust bin"** — dock actions (docks that support them)
+- **"What's the dock status?"** — dock type, errors, dust collection, mop washing
 
 ---
 
@@ -129,6 +131,9 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_list_maps` | List saved maps (floors/locations) and which is active |
 | `roborock_switch_map` | Switch the active map by name |
 | `roborock_get_map_image` | Get a rendered image of the current floor plan |
+| `roborock_start_mop_wash` / `roborock_stop_mop_wash` | Start/stop washing the mop at the dock |
+| `roborock_empty_dust_bin` | Trigger the dock to empty the dust bin |
+| `roborock_get_dock_status` | Dock type, errors, dust collection, mop washing state |
 
 ---
 
