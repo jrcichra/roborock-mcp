@@ -125,7 +125,7 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_pause_cleaning` | Pause (can be resumed) |
 | `roborock_return_to_dock` | Send home to charge |
 | `roborock_get_rooms` | List all mapped rooms |
-| `roborock_clean_room` | Clean a specific room by name |
+| `roborock_clean_room` | Clean a specific room by name, with optional repeat pass count |
 | `roborock_locate` | Play a sound to find the vacuum |
 | `roborock_set_fan_power` | Set suction/fan power (quiet, balanced, turbo, max, ...) |
 | `roborock_set_water_level` | Set mop water flow level (off, low, medium, high, ...) |

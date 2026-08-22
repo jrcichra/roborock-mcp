@@ -726,18 +726,24 @@ async def _get_rooms_fallback() -> str:
         "openWorldHint": True,
     },
 )
-async def roborock_clean_room(room_name: str) -> str:
+async def roborock_clean_room(room_name: str, repeat: int = 1) -> str:
     """Clean a specific room by name. Use roborock_get_rooms to see available rooms first.
 
     Args:
         room_name: The name of the room to clean (e.g., "Living Room", "Kitchen").
                    Case-insensitive partial matching is supported.
+        repeat: Number of cleaning passes for the room, same as the "cleaning
+                times" setting in the app. The device will reject the value
+                if it's outside what your model supports.
 
     Returns:
         str: Confirmation that room cleaning has started, or an error message.
     """
     if err := _check_connected():
         return err
+
+    if repeat < 1:
+        return "Error: repeat must be a positive integer."
 
     try:
         # Get room mapping if we don't have it cached
@@ -764,11 +770,12 @@ async def roborock_clean_room(room_name: str) -> str:
         # Start segment cleaning
         await _send(
             RoborockCommand.APP_SEGMENT_CLEAN,
-            [{"segments": matched_segments, "repeat": 1}],
+            [{"segments": matched_segments, "repeat": repeat}],
         )
 
         rooms_str = ", ".join(matched_names)
-        return f"{_device_display_name()} is now cleaning: {rooms_str}"
+        pass_str = f" ({repeat}x)" if repeat > 1 else ""
+        return f"{_device_display_name()} is now cleaning: {rooms_str}{pass_str}"
 
     except Exception as e:
         return f"Error starting room clean: {e}"
