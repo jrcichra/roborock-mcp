@@ -54,6 +54,98 @@ def _load_cached_credentials() -> dict:
     return json.loads(CREDENTIALS_FILE.read_text())
 
 
+def _write_credentials(creds: dict) -> None:
+    """Write credentials atomically (temp file + rename).
+
+    Matters when the credentials file lives on a volume shared by multiple
+    replicas of this server — a partial write from one process should never
+    be visible to another reading concurrently.
+    """
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = CREDENTIALS_FILE.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(creds, indent=2, default=str))
+    tmp_path.replace(CREDENTIALS_FILE)
+
+
+def _creds_from_login(email: str, user_data: UserData, home_data, base_url: str) -> dict:
+    """Build the credentials dict written to disk from a successful login."""
+    return {
+        "email": email,
+        "user_data": user_data.as_dict()
+        if hasattr(user_data, "as_dict")
+        else json.loads(json.dumps(user_data, default=str)),
+        "home_data": home_data.as_dict()
+        if hasattr(home_data, "as_dict")
+        else json.loads(json.dumps(home_data, default=str)),
+        "base_url": base_url,
+    }
+
+
+async def _code_login_v4_with_live_agreement(api_client, email: str, code: str) -> UserData:
+    """Replicate RoborockApiClient.code_login_v4, but fetch the current
+    user-agreement version instead of trusting the library's hardcoded one.
+
+    python-roborock's code_login_v4 hardcodes the user-agreement majorVersion/
+    minorVersion it sends; when Roborock bumps the live agreement (checked via
+    /api/v3/app/agreement/latest), a stale hardcoded version trips response
+    code 3006 (invalid user agreement) even though nothing needs accepting
+    in-app. This tries the live version first, falling back to the library's
+    hardcoded one.
+    """
+    import secrets
+    import string
+
+    from roborock.web_api import PreparedRequest
+
+    base_url = await api_client.base_url
+    country = await api_client.country
+    country_code = await api_client.country_code
+    header_clientid = api_client._get_header_client_id()
+
+    agreement_request = PreparedRequest(base_url, api_client.session, {"header_clientid": header_clientid})
+    agreement_response = await agreement_request.request(
+        "get", "/api/v3/app/agreement/latest", params={"country": country or "US"}
+    )
+    data = agreement_response.get("data", {})
+
+    async def attempt_login(major: int, minor: int) -> dict:
+        x_mercy_ks = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+        x_mercy_k = await api_client._sign_key_v3(x_mercy_ks)
+        login_request = PreparedRequest(
+            base_url,
+            api_client.session,
+            {
+                "header_clientid": header_clientid,
+                "x-mercy-ks": x_mercy_ks,
+                "x-mercy-k": x_mercy_k,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "header_clientlang": "en",
+                "header_appversion": "4.54.02",
+                "header_phonesystem": "iOS",
+                "header_phonemodel": "iPhone16,1",
+            },
+        )
+        return await login_request.request(
+            "post",
+            "/api/v4/auth/email/login/code",
+            data={
+                "country": country,
+                "countryCode": country_code,
+                "email": email,
+                "code": code,
+                "majorVersion": major,
+                "minorVersion": minor,
+            },
+        )
+
+    for major, minor in [(data.get("majorVersion", 14), data.get("minorVersion", 0)), (14, 0)]:
+        response = await attempt_login(major, minor)
+        if response.get("code") == 200:
+            return UserData.from_dict(response["data"])
+
+    raise RuntimeError(f"v4 login failed: code={response.get('code')} msg={response.get('msg')}")
+
+
 async def _password_login_and_cache() -> dict:
     """Log in with ROBOROCK_EMAIL/ROBOROCK_PASSWORD and cache fresh credentials.
 
@@ -77,18 +169,8 @@ async def _password_login_and_cache() -> dict:
     user_data = await api_client.pass_login(password)
     home_data = await api_client.get_home_data(user_data)
 
-    creds = {
-        "email": email,
-        "user_data": user_data.as_dict()
-        if hasattr(user_data, "as_dict")
-        else json.loads(json.dumps(user_data, default=str)),
-        "home_data": home_data.as_dict()
-        if hasattr(home_data, "as_dict")
-        else json.loads(json.dumps(home_data, default=str)),
-        "base_url": await api_client.base_url,
-    }
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2, default=str))
+    creds = _creds_from_login(email, user_data, home_data, await api_client.base_url)
+    _write_credentials(creds)
     logger.info("Refreshed credentials cached to %s", CREDENTIALS_FILE)
     return creds
 
@@ -105,6 +187,12 @@ class RoborockSession:
         self.device: Optional[RoborockDevice] = None
         self._rooms: Optional[dict[int, str]] = None  # segment_id -> name
         self._home_data_raw: Optional[dict] = None
+        # Kept alive between roborock_login_request_code and
+        # roborock_login_with_code so both calls share one RoborockApiClient
+        # (and thus one header_clientid) — Roborock binds an emailed code to
+        # the exact client that requested it; a mismatch fails with a 2018
+        # "email code error" regardless of whether the code itself is right.
+        self._pending_login_client: Optional[Any] = None
 
     async def connect(self):
         """Authenticate and connect to the target device.
@@ -1159,6 +1247,100 @@ async def roborock_get_dock_status() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Error getting dock status: {e}"
+
+
+@mcp.tool(
+    name="roborock_login_request_code",
+    annotations={
+        "title": "Request Login Code",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def roborock_login_request_code() -> str:
+    """Start (or restart) authentication by emailing a Roborock verification code.
+
+    Use this when the server has no working credentials — e.g. first-ever
+    setup, or the cached session expired and ROBOROCK_PASSWORD isn't set (or
+    the account requires two-step verification, which password login alone
+    can't satisfy). Follow up with roborock_login_with_code once you have the
+    code. Requires ROBOROCK_EMAIL to be set.
+
+    Returns:
+        str: Confirmation that a code was emailed, or an error message.
+    """
+    email = os.environ.get("ROBOROCK_EMAIL", "")
+    if not email:
+        return "Error: ROBOROCK_EMAIL environment variable is not set."
+
+    from roborock.web_api import RoborockApiClient
+
+    try:
+        api_client = RoborockApiClient(username=email)
+        try:
+            await api_client.request_code()
+        except Exception:
+            await api_client.request_code_v4()
+        # Held for the follow-up call — see _pending_login_client's docstring.
+        session._pending_login_client = api_client
+        return f"Verification code sent to {email}. Check your email, then call roborock_login_with_code with it."
+    except Exception as e:
+        return f"Error requesting login code: {e}"
+
+
+@mcp.tool(
+    name="roborock_login_with_code",
+    annotations={
+        "title": "Complete Login",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def roborock_login_with_code(code: str) -> str:
+    """Finish authentication using the code from roborock_login_request_code.
+
+    Saves the resulting credentials to disk and immediately connects — no
+    restart needed. Codes expire quickly (~10 minutes) and Roborock rate-limits
+    repeated code requests, so if this fails, wait a bit before requesting a
+    new code rather than retrying immediately.
+
+    Args:
+        code: The verification code emailed to your Roborock account.
+
+    Returns:
+        str: Confirmation that login (and connection) succeeded, or an error message.
+    """
+    email = os.environ.get("ROBOROCK_EMAIL", "")
+    if not email:
+        return "Error: ROBOROCK_EMAIL environment variable is not set."
+
+    api_client = session._pending_login_client
+    if api_client is None:
+        return "Error: No login in progress. Call roborock_login_request_code first."
+
+    try:
+        try:
+            user_data = await api_client.code_login(code)
+        except Exception:
+            user_data = await _code_login_v4_with_live_agreement(api_client, email, code)
+
+        home_data = await api_client.get_home_data(user_data)
+        creds = _creds_from_login(email, user_data, home_data, await api_client.base_url)
+        _write_credentials(creds)
+        session._pending_login_client = None
+        logger.info("Credentials cached to %s via roborock_login_with_code", CREDENTIALS_FILE)
+    except Exception as e:
+        return f"Error completing login: {e}"
+
+    try:
+        await session._connect_with_creds(creds)
+        return f"Login successful — connected to {session.device.name}."
+    except Exception as e:
+        return f"Login succeeded and credentials were saved, but connecting failed: {e}"
 
 
 # ---------------------------------------------------------------------------

@@ -141,6 +141,8 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_start_mop_wash` / `roborock_stop_mop_wash` | Start/stop washing the mop at the dock |
 | `roborock_empty_dust_bin` | Trigger the dock to empty the dust bin |
 | `roborock_get_dock_status` | Dock type, errors, dust collection, mop washing state |
+| `roborock_login_request_code` | Email a login verification code (alternative to running `auth.py`) |
+| `roborock_login_with_code` | Complete login with that code and connect immediately |
 
 ---
 
@@ -155,9 +157,15 @@ MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 python server.py
 ```
 
 The MCP endpoint is then served at `http://<host>:<port>/mcp`. A `Dockerfile`
-is included and builds/runs with these defaults already set; `.cache/credentials.json`
-still needs to come from somewhere (e.g. a mounted secret), since `auth.py`'s
-login flow is interactive and can't run inside a container.
+is included and builds/runs with these defaults already set.
+
+For a deployment where you can't run `auth.py` interactively (e.g. inside a
+container with no terminal), authenticate through the server itself instead:
+call the `roborock_login_request_code` tool (emails a code), then
+`roborock_login_with_code` with that code — no restart needed, and it works
+even on accounts with two-step verification, unlike `ROBOROCK_PASSWORD`.
+`.cache/credentials.json` needs to persist across restarts for this to be a
+one-time step rather than a repeat one — an `emptyDir` won't do it.
 
 ---
 
