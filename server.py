@@ -24,6 +24,7 @@ if sys.platform == "win32":
 
 from mcp.server.fastmcp import FastMCP
 
+from roborock.data import DnDTimer
 from roborock.data.containers import UserData
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
@@ -89,8 +90,7 @@ class RoborockSession:
 
         if DEVICE_NICKNAME or TARGET_MODEL:
             for dev in devices:
-                info = dev.device_info
-                model = getattr(info, "model", "") if info else ""
+                model = dev.product.model or "" if dev.product else ""
                 name = dev.name or ""
                 if (TARGET_MODEL and model == TARGET_MODEL) or (
                     DEVICE_NICKNAME and name.lower() == DEVICE_NICKNAME.lower()
@@ -132,7 +132,7 @@ async def roborock_lifespan(server: FastMCP):
     """Connect to Roborock on server start, disconnect on shutdown."""
     try:
         await session.connect()
-        logger.info("Connected to %s", DEVICE_NICKNAME)
+        logger.info("Connected to %s", session.device.name if session.device else "device")
     except FileNotFoundError as e:
         logger.warning("Auth required: %s", e)
     except Exception as e:
@@ -146,6 +146,13 @@ async def roborock_lifespan(server: FastMCP):
 # ---------------------------------------------------------------------------
 
 mcp = FastMCP("roborock_mcp", lifespan=roborock_lifespan)
+
+
+def _device_display_name() -> str:
+    """Friendly name for messages: the device's actual name, or a generic fallback."""
+    if session.device is not None and session.device.name:
+        return session.device.name
+    return DEVICE_NICKNAME or "Vacuum"
 
 
 def _check_connected() -> str | None:
@@ -211,7 +218,7 @@ async def _set_motor_modes(*, fan_power: int | None = None, water_box_mode: int 
 @mcp.tool(
     name="roborock_get_status",
     annotations={
-        "title": "Get Kronk's Status",
+        "title": "Get Vacuum Status",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -219,7 +226,7 @@ async def _set_motor_modes(*, fan_power: int | None = None, water_box_mode: int 
     },
 )
 async def roborock_get_status() -> str:
-    """Get Kronk's current status including battery level, cleaning state, and other info.
+    """Get the vacuum's current status including battery level, cleaning state, and other info.
 
     Returns:
         str: A formatted status report including battery percentage, current state
@@ -233,8 +240,8 @@ async def roborock_get_status() -> str:
         await status.refresh()
 
         info = {
-            "name": DEVICE_NICKNAME,
-            "model": TARGET_MODEL,
+            "name": _device_display_name(),
+            "model": session.device.product.model or "unknown",
             "battery": f"{status.battery}%" if status.battery is not None else "unknown",
             "state": status.state_name or str(status.state),
             "clean_time": f"{status.clean_time // 60}m {status.clean_time % 60}s" if status.clean_time else "0s",
@@ -245,7 +252,7 @@ async def roborock_get_status() -> str:
             "error": status.error_code_name or "none",
         }
 
-        lines = [f"# {DEVICE_NICKNAME} Status", ""]
+        lines = [f"# {_device_display_name()} Status", ""]
         for key, value in info.items():
             lines.append(f"- **{key.replace('_', ' ').title()}**: {value}")
 
@@ -266,7 +273,7 @@ async def roborock_get_status() -> str:
     },
 )
 async def roborock_start_cleaning() -> str:
-    """Start a full cleaning cycle. Kronk will clean all reachable areas.
+    """Start a full cleaning cycle. The vacuum will clean all reachable areas.
 
     Returns:
         str: Confirmation that cleaning has started, or an error message.
@@ -276,7 +283,7 @@ async def roborock_start_cleaning() -> str:
 
     try:
         await _send(RoborockCommand.APP_START)
-        return f"{DEVICE_NICKNAME} has started cleaning."
+        return f"{_device_display_name()} has started cleaning."
     except Exception as e:
         return f"Error starting clean: {e}"
 
@@ -292,7 +299,7 @@ async def roborock_start_cleaning() -> str:
     },
 )
 async def roborock_stop_cleaning() -> str:
-    """Stop the current cleaning cycle. Kronk will stop where he is.
+    """Stop the current cleaning cycle. The vacuum will stop where it is.
 
     Returns:
         str: Confirmation that cleaning has stopped, or an error message.
@@ -302,7 +309,7 @@ async def roborock_stop_cleaning() -> str:
 
     try:
         await _send(RoborockCommand.APP_STOP)
-        return f"{DEVICE_NICKNAME} has stopped cleaning."
+        return f"{_device_display_name()} has stopped cleaning."
     except Exception as e:
         return f"Error stopping clean: {e}"
 
@@ -318,7 +325,7 @@ async def roborock_stop_cleaning() -> str:
     },
 )
 async def roborock_pause_cleaning() -> str:
-    """Pause the current cleaning cycle. Kronk will pause in place and can be resumed.
+    """Pause the current cleaning cycle. The vacuum will pause in place and can be resumed.
 
     Returns:
         str: Confirmation that cleaning has been paused, or an error message.
@@ -328,7 +335,7 @@ async def roborock_pause_cleaning() -> str:
 
     try:
         await _send(RoborockCommand.APP_PAUSE)
-        return f"{DEVICE_NICKNAME} has paused cleaning."
+        return f"{_device_display_name()} has paused cleaning."
     except Exception as e:
         return f"Error pausing clean: {e}"
 
@@ -344,17 +351,17 @@ async def roborock_pause_cleaning() -> str:
     },
 )
 async def roborock_return_to_dock() -> str:
-    """Send Kronk back to his charging dock.
+    """Send the vacuum back to its charging dock.
 
     Returns:
-        str: Confirmation that Kronk is heading home, or an error message.
+        str: Confirmation that the vacuum is heading home, or an error message.
     """
     if err := _check_connected():
         return err
 
     try:
         await _send(RoborockCommand.APP_CHARGE)
-        return f"{DEVICE_NICKNAME} is returning to the dock."
+        return f"{_device_display_name()} is returning to the dock."
     except Exception as e:
         return f"Error sending to dock: {e}"
 
@@ -370,7 +377,7 @@ async def roborock_return_to_dock() -> str:
     },
 )
 async def roborock_get_rooms() -> str:
-    """List all rooms/segments that Kronk knows about from his map.
+    """List all rooms/segments the vacuum knows about from its map.
 
     Returns:
         str: A list of rooms with their segment IDs, or an error message.
@@ -411,7 +418,7 @@ async def _get_rooms_fallback() -> str:
     room_mapping = await _send(RoborockCommand.GET_ROOM_MAPPING)
 
     if not room_mapping:
-        return "No room mapping found. Kronk may need to complete a mapping run first."
+        return "No room mapping found. The vacuum may need to complete a mapping run first."
 
     # Resolve names from cached home data
     home_rooms = {}
@@ -468,7 +475,7 @@ async def roborock_clean_room(room_name: str) -> str:
             await roborock_get_rooms()
 
         if not session._rooms:
-            return "Error: No rooms found. Kronk may need to complete a mapping run first."
+            return "Error: No rooms found. The vacuum may need to complete a mapping run first."
 
         # Find room by name (case-insensitive partial match)
         search = room_name.lower().strip()
@@ -491,7 +498,7 @@ async def roborock_clean_room(room_name: str) -> str:
         )
 
         rooms_str = ", ".join(matched_names)
-        return f"{DEVICE_NICKNAME} is now cleaning: {rooms_str}"
+        return f"{_device_display_name()} is now cleaning: {rooms_str}"
 
     except Exception as e:
         return f"Error starting room clean: {e}"
@@ -500,7 +507,7 @@ async def roborock_clean_room(room_name: str) -> str:
 @mcp.tool(
     name="roborock_locate",
     annotations={
-        "title": "Find Kronk",
+        "title": "Find Vacuum",
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
@@ -508,7 +515,7 @@ async def roborock_clean_room(room_name: str) -> str:
     },
 )
 async def roborock_locate() -> str:
-    """Make Kronk play a sound so you can find him.
+    """Make the vacuum play a sound so you can find it.
 
     Returns:
         str: Confirmation that the locate sound is playing, or an error message.
@@ -518,7 +525,7 @@ async def roborock_locate() -> str:
 
     try:
         await _send(RoborockCommand.FIND_ME)
-        return f"{DEVICE_NICKNAME} is playing a sound so you can find him!"
+        return f"{_device_display_name()} is playing a sound so you can find him!"
     except Exception as e:
         return f"Error locating: {e}"
 
@@ -552,7 +559,7 @@ async def roborock_set_fan_power(level: str) -> str:
         options = session.device.v1_properties.status.fan_speed_options
         code = _resolve_mode_code(level, options)
         result = await _set_motor_modes(fan_power=code)
-        return f"{DEVICE_NICKNAME} fan power set: {result['fan_power']} ({result})"
+        return f"{_device_display_name()} fan power set: {result['fan_power']} ({result})"
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -587,11 +594,264 @@ async def roborock_set_water_level(level: str) -> str:
         options = session.device.v1_properties.status.water_mode_options
         code = _resolve_mode_code(level, options)
         result = await _set_motor_modes(water_box_mode=code)
-        return f"{DEVICE_NICKNAME} water level set: {result['water_box_mode']} ({result})"
+        return f"{_device_display_name()} water level set: {result['water_box_mode']} ({result})"
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
         return f"Error setting water level: {e}"
+
+
+def _seconds_to_days(seconds: int | None) -> str:
+    """Format a seconds duration as a friendly day count, treating negative as 'overdue'."""
+    if seconds is None:
+        return "unknown"
+    days = seconds / 86400
+    if days < 0:
+        return f"overdue by {abs(days):.1f} days"
+    return f"{days:.1f} days left"
+
+
+@mcp.tool(
+    name="roborock_get_consumables",
+    annotations={
+        "title": "Get Consumable Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_consumables() -> str:
+    """Get remaining life on replaceable parts (filter, brushes, sensors, etc.).
+
+    Returns:
+        str: A formatted report of remaining life for each consumable this
+             device reports, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        consumables = session.device.v1_properties.consumables
+        await consumables.refresh()
+
+        fields = [
+            ("Main brush", consumables.main_brush_time_left),
+            ("Side brush", consumables.side_brush_time_left),
+            ("Filter", consumables.filter_time_left),
+            ("Sensors", consumables.sensor_time_left),
+            ("Strainer", consumables.strainer_time_left),
+            ("Dust collection bag", consumables.dust_collection_time_left),
+            ("Cleaning brush (dock)", consumables.cleaning_brush_time_left),
+            ("Mop roller", consumables.mop_roller_time_left),
+        ]
+        lines = [f"# {_device_display_name()} Consumables", ""]
+        for label, seconds_left in fields:
+            if seconds_left is None:
+                continue  # not supported by this device
+            lines.append(f"- **{label}**: {_seconds_to_days(seconds_left)}")
+
+        if len(lines) == 2:
+            return "No consumable data reported by this device."
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting consumables: {e}"
+
+
+@mcp.tool(
+    name="roborock_get_clean_history",
+    annotations={
+        "title": "Get Cleaning History",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_clean_history() -> str:
+    """Get lifetime cleaning stats and details of the most recent clean.
+
+    Returns:
+        str: A formatted report of total clean time/area/count and the last
+             clean's duration and area, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        summary = session.device.v1_properties.clean_summary
+        await summary.refresh()
+
+        lines = [f"# {_device_display_name()} Cleaning History", "", "## Lifetime totals"]
+        total_time = summary.clean_time or 0
+        lines.append(f"- **Total clean time**: {total_time // 3600}h {(total_time % 3600) // 60}m")
+        lines.append(
+            f"- **Total area cleaned**: {summary.square_meter_clean_area:.1f} m²"
+            if summary.square_meter_clean_area is not None
+            else "- **Total area cleaned**: unknown"
+        )
+        lines.append(f"- **Total clean count**: {summary.clean_count or 0}")
+
+        record = summary.last_clean_record
+        if record is not None:
+            lines.append("")
+            lines.append("## Last clean")
+            duration = record.duration or 0
+            lines.append(f"- **Started**: {record.begin_datetime or 'unknown'}")
+            lines.append(f"- **Duration**: {duration // 60}m {duration % 60}s")
+            lines.append(
+                f"- **Area**: {record.square_meter_area:.1f} m²"
+                if record.square_meter_area is not None
+                else "- **Area**: unknown"
+            )
+            lines.append(f"- **Completed**: {'yes' if record.complete else 'no'}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting clean history: {e}"
+
+
+@mcp.tool(
+    name="roborock_get_volume",
+    annotations={
+        "title": "Get Volume",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_get_volume() -> str:
+    """Get the current sound volume level (0-100).
+
+    Returns:
+        str: The current volume level, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        volume = session.device.v1_properties.sound_volume
+        await volume.refresh()
+        return f"{_device_display_name()}'s volume is {volume.volume}."
+    except Exception as e:
+        return f"Error getting volume: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_volume",
+    annotations={
+        "title": "Set Volume",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_volume(level: int) -> str:
+    """Set the sound volume level.
+
+    Args:
+        level: Volume level from 0 (mute) to 100 (loudest).
+
+    Returns:
+        str: Confirmation with the new volume, or an error message.
+    """
+    if err := _check_connected():
+        return err
+    if not 0 <= level <= 100:
+        return "Error: level must be between 0 and 100."
+
+    try:
+        volume = session.device.v1_properties.sound_volume
+        await volume.set_volume(level)
+        return f"{_device_display_name()}'s volume set to {level}."
+    except Exception as e:
+        return f"Error setting volume: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_child_lock",
+    annotations={
+        "title": "Set Child Lock",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_child_lock(enabled: bool) -> str:
+    """Enable or disable the child lock, which locks the vacuum's physical buttons.
+
+    Args:
+        enabled: True to lock the physical buttons, False to unlock them.
+
+    Returns:
+        str: Confirmation of the new state, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    child_lock = session.device.v1_properties.child_lock
+    if child_lock is None:
+        return "Error: This device does not support child lock."
+
+    try:
+        if enabled:
+            await child_lock.enable()
+        else:
+            await child_lock.disable()
+        return f"{_device_display_name()}'s child lock is now {'enabled' if enabled else 'disabled'}."
+    except Exception as e:
+        return f"Error setting child lock: {e}"
+
+
+@mcp.tool(
+    name="roborock_set_dnd",
+    annotations={
+        "title": "Set Do Not Disturb",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def roborock_set_dnd(enabled: bool, start_time: str = "22:00", end_time: str = "08:00") -> str:
+    """Enable or disable Do Not Disturb, which silences the vacuum during the given hours.
+
+    Args:
+        enabled: True to enable Do Not Disturb, False to turn it off.
+        start_time: DND start time as "HH:MM" (24-hour), used only when enabling.
+        end_time: DND end time as "HH:MM" (24-hour), used only when enabling.
+
+    Returns:
+        str: Confirmation of the new state, or an error message.
+    """
+    if err := _check_connected():
+        return err
+
+    try:
+        dnd = session.device.v1_properties.dnd
+        if not enabled:
+            await dnd.clear_dnd_timer()
+            return f"{_device_display_name()}'s Do Not Disturb is now disabled."
+
+        start_hour, start_minute = (int(p) for p in start_time.split(":"))
+        end_hour, end_minute = (int(p) for p in end_time.split(":"))
+        await dnd.set_dnd_timer(
+            DnDTimer(
+                start_hour=start_hour,
+                start_minute=start_minute,
+                end_hour=end_hour,
+                end_minute=end_minute,
+                enabled=1,
+            )
+        )
+        return f"{_device_display_name()}'s Do Not Disturb is now enabled from {start_time} to {end_time}."
+    except ValueError:
+        return "Error: start_time/end_time must be in 'HH:MM' 24-hour format."
+    except Exception as e:
+        return f"Error setting Do Not Disturb: {e}"
 
 
 # ---------------------------------------------------------------------------

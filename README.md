@@ -1,6 +1,6 @@
 # Roborock MCP Server
 
-Control your Roborock vacuum from any MCP-compatible client. Just ask — "start cleaning", "send Kronk home", "what's the battery?", "clean the kitchen" — and your assistant talks directly to your robot.
+Control your Roborock vacuum from any MCP-compatible client. Just ask — "start cleaning", "send the vacuum home", "what's the battery?", "clean the kitchen" — and your assistant talks directly to your robot.
 
 Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](https://github.com/Python-roborock/python-roborock).
 
@@ -15,6 +15,11 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and [python-roborock](ht
 - **"Clean the kitchen"** / **"Clean the living room"** — room-specific cleaning
 - **"Find [name]"** — makes the vacuum beep so you can locate it
 - **"List my rooms"** — see all rooms the vacuum knows about
+- **"Does it need a new filter?"** / **"Check consumables"** — remaining life on filter/brushes/sensors
+- **"How much have I cleaned?"** — lifetime + last-clean stats
+- **"Turn the volume down"** / **"What's the volume set to?"**
+- **"Lock the buttons"** — enable/disable the child lock
+- **"Don't clean between 10pm and 8am"** — set Do Not Disturb hours
 
 ---
 
@@ -88,7 +93,7 @@ these env vars (alongside `ROBOROCK_EMAIL`) to pick which one this server
 controls:
 
 ```bash
-ROBOROCK_DEVICE_NAME=Kronk            # the vacuum's name in the Roborock app
+ROBOROCK_DEVICE_NAME=Rocky            # the vacuum's name in the Roborock app
 # or
 ROBOROCK_DEVICE_MODEL=roborock.vacuum.a170   # the vacuum's model ID
 ```
@@ -113,6 +118,12 @@ device is found, the server logs a warning and defaults to the first one.
 | `roborock_locate` | Play a sound to find the vacuum |
 | `roborock_set_fan_power` | Set suction/fan power (quiet, balanced, turbo, max, ...) |
 | `roborock_set_water_level` | Set mop water flow level (off, low, medium, high, ...) |
+| `roborock_get_consumables` | Remaining life on filter, brushes, sensors, etc. |
+| `roborock_get_clean_history` | Lifetime cleaning stats + details of the last clean |
+| `roborock_get_volume` | Get the current sound volume |
+| `roborock_set_volume` | Set the sound volume (0-100) |
+| `roborock_set_child_lock` | Lock/unlock the vacuum's physical buttons |
+| `roborock_set_dnd` | Enable/disable Do Not Disturb hours |
 
 ---
 
