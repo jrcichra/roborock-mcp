@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from server import _resolve_mode_code, _seconds_to_days, match_names_by_query
+from server import _next_backoff, _resolve_mode_code, _seconds_to_days, match_names_by_query
 
 
 class TestMatchNamesByQuery:
@@ -83,3 +83,7 @@ class TestSecondsToDays:
 
     def test_negative_seconds_is_overdue(self):
         assert _seconds_to_days(-86400) == "overdue by 1.0 days"
+
+
+def test_next_backoff_doubles_from_one_hour_and_caps_at_a_day():
+    assert [_next_backoff(p) for p in (0, 3600, 7200, 43200, 86400)] == [3600, 7200, 14400, 86400, 86400]

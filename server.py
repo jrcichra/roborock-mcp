@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +27,7 @@ from mcp.server.fastmcp import FastMCP, Image
 
 from roborock.data import DnDTimer, ValleyElectricityTimer
 from roborock.data.containers import UserData
+from roborock.exceptions import RoborockRateLimit
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
 from roborock.roborock_typing import RoborockCommand
@@ -110,6 +112,14 @@ async def _password_login_and_cache() -> dict:
     return creds
 
 
+RATE_LIMIT_BACKOFF_MIN, RATE_LIMIT_BACKOFF_MAX = 3600, 86400  # seconds
+
+
+def _next_backoff(prev: float) -> float:
+    """Cooldown after a Roborock rate-limit error: 1h, doubling each time, capped at 24h."""
+    return min(max(prev * 2, RATE_LIMIT_BACKOFF_MIN), RATE_LIMIT_BACKOFF_MAX)
+
+
 # ---------------------------------------------------------------------------
 # Session — manages the DeviceManager and target device
 # ---------------------------------------------------------------------------
@@ -128,6 +138,10 @@ class RoborockSession:
         # the exact client that requested it; a mismatch fails with a 2018
         # "email code error" regardless of whether the code itself is right.
         self._pending_login_client: Optional[Any] = None
+        # Roborock's cloud rate-limits login/home-data requests. Once hit, every
+        # retry makes it worse, so back off instead of hammering it on each connect().
+        self._rate_limited_until = 0.0
+        self._backoff = 0.0
 
     async def connect(self):
         """Authenticate and connect to the target device.
@@ -136,20 +150,40 @@ class RoborockSession:
         ROBOROCK_PASSWORD is set, logs in fresh and retries once — this lets a
         long-running deployment self-heal from an expired token without any
         manual credential refresh.
+
+        After a RoborockRateLimit error, further calls fail fast (no network
+        requests) until a growing cooldown (1h doubling to 24h) has passed.
         """
-        try:
-            creds = _load_cached_credentials()
-        except FileNotFoundError:
-            creds = await _password_login_and_cache()
+        if self.device is not None and self.device.is_connected:
+            return
+        wait = self._rate_limited_until - time.monotonic()
+        if wait > 0:
+            raise RuntimeError(
+                f"Roborock rate-limited us; not retrying for another {int(wait // 60)} min."
+            )
 
         try:
-            await self._connect_with_creds(creds)
-        except Exception as e:
-            if not os.environ.get("ROBOROCK_PASSWORD"):
-                raise
-            logger.warning("Connect failed (%s); retrying with a fresh password login.", e)
-            creds = await _password_login_and_cache()
-            await self._connect_with_creds(creds)
+            try:
+                creds = _load_cached_credentials()
+            except FileNotFoundError:
+                creds = await _password_login_and_cache()
+
+            try:
+                await self._connect_with_creds(creds)
+            except RoborockRateLimit:
+                raise  # a fresh password login would only add to the limit
+            except Exception as e:
+                if not os.environ.get("ROBOROCK_PASSWORD"):
+                    raise
+                logger.warning("Connect failed (%s); retrying with a fresh password login.", e)
+                creds = await _password_login_and_cache()
+                await self._connect_with_creds(creds)
+        except RoborockRateLimit:
+            self._backoff = _next_backoff(self._backoff)
+            self._rate_limited_until = time.monotonic() + self._backoff
+            logger.error("Roborock rate limit hit; backing off %d min.", self._backoff // 60)
+            raise
+        self._backoff = self._rate_limited_until = 0.0
 
     async def _connect_with_creds(self, creds: dict):
         """Connect to the target device using the given credentials dict."""
