@@ -205,6 +205,16 @@ Run the tests with `uv run pytest`.
 - Check the path in your client's MCP config is correct and uses the full absolute path
 - On Windows, make sure backslashes are doubled: `C:\\Users\\...`
 
+**"Not connected to Roborock"**
+- The server connects once at startup, but if that connect fails (expired token,
+  or Roborock rate-limits the login/home-data requests while the container boots)
+  it recovers on its own: the next tool call retries the connection from
+  `.cache/credentials.json`, so you don't need to restart the deployment. Roborock's
+  rate limit arms a growing cooldown (1h doubling to 24h), during which retries
+  fail fast without any network calls — wait for it rather than hammering it.
+- If there are no usable cached credentials left, re-authenticate through the
+  tools: `roborock_login_request_code`, then `roborock_login_with_code`.
+
 **"No devices discovered"**
 - Re-run `auth.py` to refresh your credentials
 - Make sure your vacuum is online and linked to your Roborock account

@@ -83,6 +83,15 @@ def _creds_from_login(email: str, user_data: UserData, home_data, base_url: str)
     }
 
 
+class AuthRequired(RuntimeError):
+    """Credentials are missing/unusable and no password login is configured.
+
+    A RuntimeError subclass, so existing `except RuntimeError`/`except Exception`
+    handling keeps working; the distinct type just lets callers tell "needs auth"
+    apart from "connect failed for some other reason".
+    """
+
+
 async def _password_login_and_cache() -> dict:
     """Log in with ROBOROCK_EMAIL/ROBOROCK_PASSWORD and cache fresh credentials.
 
@@ -96,7 +105,7 @@ async def _password_login_and_cache() -> dict:
     email = os.environ.get("ROBOROCK_EMAIL", "")
     password = os.environ.get("ROBOROCK_PASSWORD", "")
     if not email or not password:
-        raise RuntimeError(
+        raise AuthRequired(
             "No usable cached credentials and no ROBOROCK_EMAIL/ROBOROCK_PASSWORD "
             "set to log in automatically. Run 'python auth.py' first."
         )
@@ -142,6 +151,17 @@ class RoborockSession:
         # retry makes it worse, so back off instead of hammering it on each connect().
         self._rate_limited_until = 0.0
         self._backoff = 0.0
+        # Serializes lazy reconnects (see _ensure_connected): a client may fire
+        # several tool calls at once while disconnected, and each one would
+        # otherwise trigger its own connect() — i.e. several home-data fetches,
+        # straight into the rate limit this backoff exists to avoid.
+        self._connect_lock = asyncio.Lock()
+
+    def _note_rate_limit(self) -> None:
+        """Record a Roborock rate-limit hit: start/extend the fail-fast cooldown."""
+        self._backoff = _next_backoff(self._backoff)
+        self._rate_limited_until = time.monotonic() + self._backoff
+        logger.error("Roborock rate limit hit; backing off %d min.", self._backoff // 60)
 
     async def connect(self):
         """Authenticate and connect to the target device.
@@ -179,9 +199,7 @@ class RoborockSession:
                 creds = await _password_login_and_cache()
                 await self._connect_with_creds(creds)
         except RoborockRateLimit:
-            self._backoff = _next_backoff(self._backoff)
-            self._rate_limited_until = time.monotonic() + self._backoff
-            logger.error("Roborock rate limit hit; backing off %d min.", self._backoff // 60)
+            self._note_rate_limit()
             raise
         self._backoff = self._rate_limited_until = 0.0
 
@@ -250,7 +268,7 @@ async def roborock_lifespan(server: FastMCP):
     try:
         await session.connect()
         logger.info("Connected to %s", session.device.name if session.device else "device")
-    except FileNotFoundError as e:
+    except (FileNotFoundError, AuthRequired) as e:
         logger.warning("Auth required: %s", e)
     except Exception as e:
         logger.error("Failed to connect: %s", e, exc_info=True)
@@ -277,13 +295,49 @@ def _device_display_name() -> str:
     return DEVICE_NICKNAME or "Vacuum"
 
 
-def _check_connected() -> str | None:
-    """Return an error string if not connected, else None."""
-    if session.device is None or not session.device.is_connected:
-        return (
-            "Error: Not connected to Roborock. "
-            "Run 'python auth.py' first to authenticate, then restart the server."
-        )
+def _not_connected_error(reason: str) -> str:
+    """The error every tool returns when there is no live connection."""
+    return (
+        "Error: Not connected to Roborock. "
+        f"{reason} "
+        "Call roborock_login_request_code, then roborock_login_with_code to "
+        "re-authenticate without restarting the server."
+    )
+
+
+async def _ensure_connected() -> str | None:
+    """Return an error string if not connected, reconnecting first if possible.
+
+    The lifespan connects once at startup, which is enough for a healthy start
+    but leaves a pod stranded when startup connect fails (expired token, or a
+    Roborock rate limit hit while the pod booted): nothing else ever retried,
+    so every tool kept answering "Not connected" until someone restarted the
+    deployment. Credentials are already on disk by then — login tools write
+    them before they connect — so retry connect() here instead.
+
+    connect() fails fast (no network) while its rate-limit cooldown is active,
+    so retrying on each tool call can't hammer Roborock; the lock keeps a
+    burst of parallel tool calls from firing one reconnect each.
+    """
+    if session.device is not None and session.device.is_connected:
+        return None
+    async with session._connect_lock:
+        if session.device is not None and session.device.is_connected:
+            return None  # a concurrent caller already reconnected while we waited
+        try:
+            await session.connect()
+        except (FileNotFoundError, AuthRequired) as e:
+            # No usable credentials on disk (or no password login available).
+            logger.warning("Not connected and reconnect needs auth: %s", e)
+            return _not_connected_error("No usable cached credentials.")
+        except Exception as e:
+            logger.warning("Reconnect attempt failed: %s", e)
+            return _not_connected_error(f"Reconnecting failed ({e}).")
+        if session.device is None or not session.device.is_connected:
+            # connect() came back without a live device — don't let a tool run
+            # against session.device when there isn't one.
+            logger.warning("connect() returned but no device is connected")
+            return _not_connected_error("Reconnect left no live device.")
     return None
 
 
@@ -371,7 +425,7 @@ async def roborock_get_status() -> str:
         str: A formatted status report including battery percentage, current state
              (idle, cleaning, charging, etc.), clean time, clean area, and error info.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -418,7 +472,7 @@ async def roborock_start_cleaning() -> str:
     Returns:
         str: Confirmation that cleaning has started, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -445,7 +499,7 @@ async def roborock_stop_cleaning() -> str:
     Returns:
         str: Confirmation that cleaning has stopped, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -472,7 +526,7 @@ async def roborock_pause_cleaning() -> str:
     Returns:
         str: Confirmation that cleaning has been paused, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -499,7 +553,7 @@ async def roborock_return_to_dock() -> str:
     Returns:
         str: Confirmation that the vacuum is heading home, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -527,7 +581,7 @@ async def roborock_list_maps() -> str:
         str: A list of map names, or an error message. Use a map's name with
              roborock_switch_map to make it active before cleaning.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -570,7 +624,7 @@ async def roborock_switch_map(map_name: str) -> str:
     Returns:
         str: Confirmation of the switch, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -618,7 +672,7 @@ async def roborock_get_map_image() -> Image:
     Raises:
         RuntimeError: If not connected or no map image is available.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         raise RuntimeError(err)
 
     map_content = session.device.v1_properties.map_content
@@ -647,7 +701,7 @@ async def roborock_get_rooms() -> str:
         str: A list of rooms with their segment IDs, or an error message.
              Use the room names with roborock_clean_room to clean specific rooms.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -734,7 +788,7 @@ async def roborock_clean_room(room_name: str, repeat: int = 1) -> str:
     Returns:
         str: Confirmation that room cleaning has started, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     if repeat < 1:
@@ -795,7 +849,7 @@ async def roborock_list_routines() -> str:
         str: A list of routine names, or an error message.
              Use a routine's name with roborock_run_routine to run it.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -833,7 +887,7 @@ async def roborock_run_routine(routine_name: str) -> str:
     Returns:
         str: Confirmation that the routine has started, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -873,7 +927,7 @@ async def roborock_locate() -> str:
     Returns:
         str: Confirmation that the locate sound is playing, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -906,7 +960,7 @@ async def roborock_set_fan_power(level: str) -> str:
         str: Confirmation with the new fan level, or an error message listing
              valid options.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -942,7 +996,7 @@ async def roborock_set_water_level(level: str) -> str:
         str: Confirmation with the new water level, or an error message listing
              valid options.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -984,7 +1038,7 @@ async def roborock_get_consumables() -> str:
         str: A formatted report of remaining life for each consumable this
              device reports, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1032,7 +1086,7 @@ async def roborock_get_clean_history() -> str:
         str: A formatted report of total clean time/area/count and the last
              clean's duration and area, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1085,7 +1139,7 @@ async def roborock_get_volume() -> str:
     Returns:
         str: The current volume level, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1116,7 +1170,7 @@ async def roborock_set_volume(level: int) -> str:
     Returns:
         str: Confirmation with the new volume, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
     if not 0 <= level <= 100:
         return "Error: level must be between 0 and 100."
@@ -1158,7 +1212,7 @@ async def roborock_set_child_lock(enabled: bool) -> str:
     Returns:
         str: Confirmation of the new state, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     child_lock = session.device.v1_properties.child_lock
@@ -1191,7 +1245,7 @@ async def roborock_set_led_status(enabled: bool) -> str:
     Returns:
         str: Confirmation of the new state, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     led_status = session.device.v1_properties.led_status
@@ -1225,7 +1279,7 @@ async def roborock_set_flow_led_status(enabled: bool) -> str:
     Returns:
         str: Confirmation of the new state, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     flow_led_status = session.device.v1_properties.flow_led_status
@@ -1260,7 +1314,7 @@ async def roborock_set_dnd(enabled: bool, start_time: str = "22:00", end_time: s
     Returns:
         str: Confirmation of the new state, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1313,7 +1367,7 @@ async def roborock_set_valley_electricity_timer(
     Returns:
         str: Confirmation of the new state, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     timer = session.device.v1_properties.valley_electricity_timer
@@ -1367,7 +1421,7 @@ async def roborock_start_mop_wash() -> str:
     Returns:
         str: Confirmation that washing has started, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1394,7 +1448,7 @@ async def roborock_stop_mop_wash() -> str:
     Returns:
         str: Confirmation that washing has stopped, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1421,7 +1475,7 @@ async def roborock_empty_dust_bin() -> str:
     Returns:
         str: Confirmation that emptying has started, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1448,7 +1502,7 @@ async def roborock_get_dock_status() -> str:
     Returns:
         str: A formatted dock status report, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1489,7 +1543,7 @@ async def roborock_get_network_info() -> str:
     Returns:
         str: A formatted network info report, or an error message.
     """
-    if err := _check_connected():
+    if err := await _ensure_connected():
         return err
 
     try:
@@ -1606,9 +1660,24 @@ async def roborock_login_with_code(code: str) -> str:
     try:
         await session._connect_with_creds(creds)
         return f"Login successful — connected to {session.device.name}."
+    except RoborockRateLimit as e:
+        # Credentials are on disk, so the next tool call reconnects on its own
+        # once the cooldown expires — no restart, and no need to email another
+        # code. Record the hit here too: this path bypasses connect(), which is
+        # what normally arms the cooldown.
+        session._note_rate_limit()
+        logger.error("Login succeeded but connecting failed: %s", e)
+        return (
+            f"Login succeeded and credentials were saved, but connecting failed: {e}. "
+            "No restart needed — the next tool call retries the connection once "
+            "Roborock's cooldown expires."
+        )
     except Exception as e:
         logger.exception("Login succeeded but connecting failed")
-        return f"Login succeeded and credentials were saved, but connecting failed: {e}"
+        return (
+            f"Login succeeded and credentials were saved, but connecting failed: {e}. "
+            "No restart needed — the next tool call retries the connection."
+        )
 
 
 # ---------------------------------------------------------------------------
