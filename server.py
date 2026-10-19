@@ -25,17 +25,22 @@ if sys.platform == "win32":
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from roborock.data import DnDTimer, ValleyElectricityTimer
+from roborock.data import DnDTimer, HomeData, ValleyElectricityTimer
 from roborock.data.containers import UserData
 from roborock.exceptions import RoborockRateLimit
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
+from roborock.devices.cache import CacheData
+from roborock.devices.file_cache import FileCache
 from roborock.roborock_typing import RoborockCommand
 
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent / ".cache"
 CREDENTIALS_FILE = CACHE_DIR / "credentials.json"
+# Home data, device key and the robot's LAN IP, reused across connects so a
+# reconnect talks to the robot locally instead of re-fetching from the cloud.
+DEVICE_CACHE_FILE = CACHE_DIR / "device_cache.json"
 # Only needed if your Roborock account has more than one vacuum — set these to
 # pick which one this server controls. Leave unset and the server uses
 # whichever single device it finds (or the first one, if there are several).
@@ -147,6 +152,7 @@ class RoborockSession:
         # the exact client that requested it; a mismatch fails with a 2018
         # "email code error" regardless of whether the code itself is right.
         self._pending_login_client: Optional[Any] = None
+        self._cache: Optional[FileCache] = None
         # Roborock's cloud rate-limits login/home-data requests. Once hit, every
         # retry makes it worse, so back off instead of hammering it on each connect().
         self._rate_limited_until = 0.0
@@ -217,7 +223,21 @@ class RoborockSession:
         # reconnect loop. Do NOT call discover_devices() again here — it re-fetches
         # home data over HTTP — and do NOT call device.connect() on the result:
         # both are redundant and the extra connect tears down healthy connections.
-        self.manager = await create_device_manager(user_params)
+        # JSON, not FileCache's default pickle: the cached trait data can hold
+        # a live channel callback that pickle can't serialize.
+        cache = FileCache(
+            DEVICE_CACHE_FILE,
+            serialize_fn=lambda v: json.dumps(v.as_dict()).encode(),
+            deserialize_fn=lambda b: CacheData.from_dict(json.loads(b)),
+        )
+        cache_data = await cache.get()
+        if cache_data.home_data is None and self._home_data_raw:
+            # Seed from credentials.json so the first connect skips the
+            # rate-limited home-data request too.
+            cache_data.home_data = HomeData.from_dict(self._home_data_raw)
+        self._cache = cache
+        self.manager = await create_device_manager(user_params, cache=cache)
+        await cache.flush()
 
         devices = await self.manager.get_devices()
         if not devices:
@@ -247,6 +267,8 @@ class RoborockSession:
 
     async def close(self):
         """Clean up connections."""
+        if self._cache:
+            await self._cache.flush()
         if self.device and self.device.is_connected:
             try:
                 await self.device.close()
