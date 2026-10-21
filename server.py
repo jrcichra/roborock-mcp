@@ -657,16 +657,16 @@ async def roborock_switch_map(map_name: str) -> str:
         if not maps.map_info:
             return "No saved maps found."
 
-        by_name = {info.name: info for info in maps.map_info}
-        matches = match_names_by_query(map_name, list(by_name.items()))
+        items = [(info, info.name) for info in maps.map_info]
+        matches = match_names_by_query(map_name, items)
         if not matches:
-            available = ", ".join(by_name)
+            available = ", ".join(info.name for info in maps.map_info)
             return f"Error: No map matching '{map_name}' found. Available maps: {available}"
         if len(matches) > 1:
-            names = ", ".join(name for name, _ in matches)
+            names = ", ".join(name for _, name in matches)
             return f"Error: '{map_name}' matches multiple maps: {names}. Be more specific."
 
-        matched_info = matches[0][1]
+        matched_info = matches[0][0]
         await maps.set_current_map(matched_info.map_flag)
         session._rooms = None  # rooms differ per map; force a refresh next time
         return f"Switched to map: {matched_info.name}"
